@@ -42,11 +42,15 @@ type: custom:car-heater-card
 
 The card normally detects entities from the Car Heater device automatically. If you have more than one Car Heater device, select the device in the visual editor.
 
-### HACS note
+#
+## HACS
 
-This card uses separate translation files. For that reason `hacs.json` does not use `filename`, because HACS only downloads the single JavaScript file when `filename` is set for frontend plugins. The resource URL is still:
+Add this repository as a custom repository in HACS with category **Dashboard**.
+
+This repository intentionally does not use `filename` in `hacs.json`, so HACS installs the whole repository and keeps the `translations/` directory together with `car-heater-card.js`. Create GitHub releases as normal tags without attaching a separate zip asset.
+
+Resource URL after HACS install:
 
 ```yaml
-url: /hacsfiles/car-heater-card/car-heater-card.js
-type: module
+/local/community/car-heater-card/car-heater-card.js
 ```

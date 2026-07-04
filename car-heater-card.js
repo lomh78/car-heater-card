@@ -90,6 +90,15 @@ class CarHeaterCard extends HTMLElement {
 
   getCardSize() { return 5; }
 
+  isCarHeaterDevice(device) {
+    const identifiers = device?.identifiers || [];
+    if (identifiers.some((identifier) => Array.isArray(identifier) && identifier[0] === 'car_heater')) return true;
+    const name = String(device?.name_by_user || device?.name || '').toLowerCase();
+    const manufacturer = String(device?.manufacturer || '').toLowerCase();
+    const model = String(device?.model || '').toLowerCase();
+    return name.includes('car heater') || name.includes('motorvärmare') || model.includes('car heater') || manufacturer.includes('car heater');
+  }
+
   get resolvedEntities() {
     return Object.keys(this.config?.entities || {}).length ? this.config.entities : (this._autoEntities || {});
   }
@@ -118,9 +127,7 @@ class CarHeaterCard extends HTMLElement {
     ]);
     let targetDeviceId = deviceId;
     if (!targetDeviceId) {
-      const device = devices.find((d) =>
-        (d.identifiers || []).some((identifier) => Array.isArray(identifier) && identifier[0] === 'car_heater')
-      );
+      const device = devices.find((d) => this.isCarHeaterDevice(d));
       targetDeviceId = device?.id;
     }
     if (!targetDeviceId) return {};
@@ -442,13 +449,28 @@ class CarHeaterCardEditor extends HTMLElement {
 
   setConfig(config) {
     this._config = config || {};
-    this.render();
+    if (!this._editorRendered || !this.hasActiveEditorFocus()) {
+      this.render();
+    }
   }
 
   set hass(hass) {
     this._hass = hass;
     this.loadDevices();
-    this.render();
+  }
+
+  hasActiveEditorFocus() {
+    const active = this.shadowRoot?.activeElement;
+    return !!active && active !== this.shadowRoot;
+  }
+
+  isCarHeaterDevice(device) {
+    const identifiers = device?.identifiers || [];
+    if (identifiers.some((identifier) => Array.isArray(identifier) && identifier[0] === 'car_heater')) return true;
+    const name = String(device?.name_by_user || device?.name || '').toLowerCase();
+    const manufacturer = String(device?.manufacturer || '').toLowerCase();
+    const model = String(device?.model || '').toLowerCase();
+    return name.includes('car heater') || name.includes('motorvärmare') || model.includes('car heater') || manufacturer.includes('car heater');
   }
 
   async loadDevices() {
@@ -456,9 +478,7 @@ class CarHeaterCardEditor extends HTMLElement {
     this._loading = true;
     try {
       const devices = await this._hass.callWS({ type: 'config/device_registry/list' });
-      this._devices = devices.filter((device) =>
-        (device.identifiers || []).some((identifier) => Array.isArray(identifier) && identifier[0] === 'car_heater')
-      );
+      this._devices = devices.filter((device) => this.isCarHeaterDevice(device));
       this._loaded = true;
       this.render();
     } catch (err) {
@@ -479,12 +499,12 @@ class CarHeaterCardEditor extends HTMLElement {
       bubbles: true,
       composed: true,
     }));
-    this.render();
   }
 
   render() {
     if (!this.shadowRoot) return;
     const cfg = this._config || {};
+    this._editorRendered = true;
     const deviceOptions = this._devices.map((device) => {
       const name = device.name_by_user || device.name || device.id;
       return `<option value="${device.id}" ${cfg.device_id === device.id ? 'selected' : ''}>${name}</option>`;
