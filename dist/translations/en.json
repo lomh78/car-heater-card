@@ -33,6 +33,17 @@
     "disabled": "Disabled",
     "unavailable": "Unavailable",
     "unknown": "Unknown",
-    "no_departure": "No departure"
-  }
+    "no_departure": "No departure",
+    "finished": "Finished",
+    "no_heating_needed": "No heating needed"
+  },
+  "graph": "Graph",
+  "hours_short": " h",
+  "planned_runtime": "Planned runtime",
+  "runtime_history": "Runtime history",
+  "loading": "Loading...",
+  "now": "Now",
+  "past_future": "History ← now → plan",
+  "actual_runtime": "Actual runtime",
+  "timeline": "Timeline"
 }

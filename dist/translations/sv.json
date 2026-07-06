@@ -33,6 +33,17 @@
     "disabled": "Avaktiverad",
     "unavailable": "Otillgänglig",
     "unknown": "Okänd",
-    "no_departure": "Ingen avresa"
-  }
+    "no_departure": "Ingen avresa",
+    "finished": "Klar",
+    "no_heating_needed": "Ingen värme behövs"
+  },
+  "graph": "Graf",
+  "hours_short": " h",
+  "planned_runtime": "Planerad gångtid",
+  "runtime_history": "Körhistorik",
+  "loading": "Laddar...",
+  "now": "Nu",
+  "past_future": "Historik ← nu → planering",
+  "actual_runtime": "Faktisk gångtid",
+  "timeline": "Tidslinje"
 }
