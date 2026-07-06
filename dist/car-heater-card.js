@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.4.6';
+const CAR_HEATER_CARD_VERSION = '0.4.7';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 class CarHeaterCard extends HTMLElement {
@@ -227,6 +227,8 @@ class CarHeaterCard extends HTMLElement {
       manual: this.t('status.manual'),
       start_now: this.t('status.start_now'),
       no_temperature: this.t('status.no_temperature'),
+      no_heating_needed: this.t('status.no_heating_needed'),
+      finished: this.t('status.finished'),
       disabled: this.t('status.disabled'),
       unavailable: this.t('status.unavailable'),
       unknown: this.t('status.unknown'),
@@ -236,8 +238,10 @@ class CarHeaterCard extends HTMLElement {
 
   isHeaterRunning(e) {
     const attrs = this.statusAttributes();
+    const nested = this.attrPath('heater_switch.is_on');
+    if (typeof nested === 'boolean') return nested;
     if (typeof attrs.heater_switch_is_on === 'boolean') return attrs.heater_switch_is_on;
-    const attrState = String(attrs.heater_switch_state || '').toLowerCase();
+    const attrState = String(this.attrPath('heater_switch.state', attrs.heater_switch_state || '')).toLowerCase();
     if (attrState === 'on') return true;
     if (attrState === 'off') return false;
     const heaterState = this.state(e.heater_switch, '');
@@ -360,10 +364,10 @@ class CarHeaterCard extends HTMLElement {
   async ensureHistory() {
     if (!this._hass || !this.historyEnabled()) return;
     const e = this.resolvedEntities;
-    if (this.config.show_temperature_graph) this.loadHistory('temperature', e.temperature, this.graphHours());
-    if (this.config.show_power_graph) this.loadHistory('power', e.power_sensor || this.config.power_sensor, this.graphHours());
-    if (this.config.show_planned_runtime) this.loadHistory('runtime_graph', e.heater_switch || e.status || e.power_sensor || this.config.power_sensor, this.graphHours(), true);
-    if (this.config.show_runtime_history) this.loadHistory('runtime', e.heater_switch || e.status || e.power_sensor || this.config.power_sensor, this.runtimeHistoryDays() * 24, true);
+    if (this.config.show_temperature_graph) this.loadHistory('temperature', this.temperatureEntity(), this.graphHours());
+    if (this.config.show_power_graph) this.loadHistory('power', this.powerEntity(), this.graphHours());
+    if (this.config.show_planned_runtime) this.loadHistory('runtime_graph', e.heater_switch || e.status || this.powerEntity(), this.graphHours(), true);
+    if (this.config.show_runtime_history) this.loadHistory('runtime', e.heater_switch || e.status || this.powerEntity(), this.runtimeHistoryDays() * 24, true);
   }
 
   async loadHistory(kind, entity, hours, forceFull = false) {
@@ -462,8 +466,37 @@ class CarHeaterCard extends HTMLElement {
     return this.obj(e.status)?.attributes || {};
   }
 
+  attrPath(path, fallback = undefined) {
+    const attrs = this.statusAttributes();
+    const value = String(path).split('.').reduce((obj, part) => {
+      if (obj && Object.prototype.hasOwnProperty.call(obj, part)) return obj[part];
+      return undefined;
+    }, attrs);
+    return value === undefined || value === null || value === '' ? fallback : value;
+  }
+
   dateAttr(name) {
-    return this.parseDate(this.statusAttributes()?.[name]);
+    return this.parseDate(this.attrPath(name));
+  }
+
+  datePath(path) {
+    return this.parseDate(this.attrPath(path));
+  }
+
+  temperatureEntity() {
+    const e = this.resolvedEntities;
+    return this.attrPath('temperature.entity_id') || this.attrPath('temperature_source') || e.temperature;
+  }
+
+  powerEntity() {
+    const e = this.resolvedEntities;
+    return this.attrPath('power_sensor.entity_id') || this.attrPath('power_entity_id') || e.power_sensor || this.config.power_sensor;
+  }
+
+  rangeFromPath(base, fallbackStart = null, fallbackStop = null) {
+    const start = this.datePath(`${base}.start`) || (fallbackStart ? this.dateAttr(fallbackStart) : null);
+    const stop = this.datePath(`${base}.stop`) || (fallbackStop ? this.dateAttr(fallbackStop) : null);
+    return { start, stop };
   }
 
   clipRange(range, start, end) {
@@ -475,16 +508,20 @@ class CarHeaterCard extends HTMLElement {
   }
 
   scheduledRanges(start, end) {
-    const e = this.resolvedEntities;
-    const startAttr = this.dateAttr('start_datetime');
-    const stopAttr = this.dateAttr('stop_datetime');
-    const departureAttr = this.dateAttr('departure_datetime');
-    const attrRange = this.clipRange({ start: startAttr, stop: stopAttr }, start, end);
-    const attrDeparture = departureAttr && departureAttr >= start && departureAttr <= end ? [departureAttr] : [];
-    if (attrRange || attrDeparture.length) {
-      return { ranges: attrRange ? [attrRange] : [], departures: attrDeparture };
+    const planned = this.rangeFromPath('timeline.planned', 'planned_start', 'planned_stop');
+    const plannedRange = this.clipRange(planned, start, end);
+    const departure = this.datePath('timeline.planned.departure') || this.dateAttr('planned_departure') || this.dateAttr('departure_datetime');
+    const departures = departure && departure >= start && departure <= end ? [departure] : [];
+    if (plannedRange || departures.length) {
+      return { ranges: plannedRange ? [plannedRange] : [], departures };
     }
 
+    const startAttr = this.dateAttr('start_datetime');
+    const stopAttr = this.dateAttr('stop_datetime');
+    const attrRange = this.clipRange({ start: startAttr, stop: stopAttr }, start, end);
+    if (attrRange) return { ranges: [attrRange], departures };
+
+    const e = this.resolvedEntities;
     const startVal = this.state(e.start_time, '');
     const stopVal = this.state(e.stop_time, '');
     const depVal = this.state(e.departure_time, '');
@@ -498,47 +535,44 @@ class CarHeaterCard extends HTMLElement {
       if (stop <= s) stop.setDate(stop.getDate() + 1);
       if (stop >= start && s <= end) ranges.push({ start: s, stop });
     });
-    const departures = this.timeToDateInRange(depVal, start, end);
-    return { ranges, departures };
+    return { ranges, departures: this.timeToDateInRange(depVal, start, end) };
   }
 
   actualRuntimeRanges(start, end) {
-    const e = this.resolvedEntities;
-    const lastStart = this.dateAttr('last_start');
-    let lastStop = this.dateAttr('last_stop');
-    const running = this.isHeaterRunning(e);
-
-    // Prefer the integration's own exact timestamps. History can be sparse,
-    // especially while the heater is currently running, but these attributes
-    // are updated when the integration turns the output on/off.
-    if (lastStart) {
-      if (!lastStop || (running && lastStop < lastStart)) lastStop = new Date();
-      const exact = this.clipRange({ start: lastStart, stop: lastStop }, start, end);
-      if (exact) return [exact];
-    }
-
-    const entity = e.heater_switch || e.status || e.power_sensor || this.config.power_sensor;
-    const cache = this.history('runtime_graph', entity, this.graphHours());
-    const rows = (cache?.rows || [])
-      .map((row) => ({ state: row.state, ts: new Date(row.last_changed || row.last_updated).getTime() }))
-      .filter((r) => Number.isFinite(r.ts))
-      .sort((a, b) => a.ts - b.ts);
-    const threshold = Number(this.config.power_runtime_threshold ?? 50);
-    const isOn = (state) => {
-      if (entity?.startsWith('switch.') || entity?.startsWith('binary_sensor.')) return state === 'on';
-      if (entity === e.status || entity?.includes('status')) return ['running', 'heating', 'manual', 'start_now'].includes(String(state).toLowerCase());
-      return Number(state) > threshold;
-    };
-    if (!rows.length) return [];
-
     const ranges = [];
-    for (let i = 0; i < rows.length; i += 1) {
-      if (!isOn(rows[i].state)) continue;
-      const a = new Date(Math.max(rows[i].ts, start.getTime()));
-      const b = new Date(Math.min(i + 1 < rows.length ? rows[i + 1].ts : end.getTime(), end.getTime()));
-      if (b > a) ranges.push({ start: a, stop: b });
+    const addRange = (range, allowOpen = false) => {
+      let { start: a, stop: b } = range || {};
+      if (!a) return;
+      if (!b && allowOpen && this.isHeaterRunning(this.resolvedEntities)) b = new Date();
+      const clipped = this.clipRange({ start: a, stop: b }, start, end);
+      if (clipped) ranges.push(clipped);
+    };
+
+    const history = this.attrPath('timeline.history') || this.attrPath('run_history') || [];
+    if (Array.isArray(history)) {
+      history.forEach((run) => {
+        const startValue = run?.start;
+        const stopValue = run?.stop;
+        const startDate = startValue ? new Date(startValue) : null;
+        const stopDate = stopValue ? new Date(stopValue) : null;
+        if (startDate && stopDate && !Number.isNaN(startDate.getTime()) && !Number.isNaN(stopDate.getTime())) {
+          addRange({ start: startDate, stop: stopDate });
+        }
+      });
     }
-    return ranges;
+
+    addRange(this.rangeFromPath('timeline.previous', 'previous_start', 'previous_stop'));
+    addRange(this.rangeFromPath('timeline.current', 'current_start', 'current_stop'), true);
+
+    // Backwards compatibility with older integration versions.
+    if (!ranges.length) {
+      let lastStop = this.dateAttr('last_stop');
+      const lastStart = this.dateAttr('last_start');
+      if (lastStart && !lastStop && this.isHeaterRunning(this.resolvedEntities)) lastStop = new Date();
+      addRange({ start: lastStart, stop: lastStop });
+    }
+
+    return ranges.sort((a, b) => a.start - b.start);
   }
 
   linePath(points, x, y) {
@@ -584,12 +618,15 @@ class CarHeaterCard extends HTMLElement {
 
     const series = [];
     if (showTemp) {
-      const tempSeries = buildSeries('temperature', this.t('temperature'), e.temperature, 'temperature', 'temp-line', this.unit(e.temperature) || '°C');
+      const tempEntity = this.temperatureEntity();
+      const tempUnit = this.attrPath('temperature.unit') || this.unit(tempEntity) || '°C';
+      const tempSeries = buildSeries('temperature', this.t('temperature'), tempEntity, 'temperature', 'temp-line', tempUnit);
       if (tempSeries) series.push(tempSeries);
     }
     if (showPower) {
-      const pEntity = e.power_sensor || this.config.power_sensor;
-      const powerSeries = buildSeries('power', this.t('power'), pEntity, 'power', 'power-line', this.unit(pEntity) || 'W');
+      const pEntity = this.powerEntity();
+      const powerUnit = this.attrPath('power_sensor.unit') || this.unit(pEntity) || 'W';
+      const powerSeries = buildSeries('power', this.t('power'), pEntity, 'power', 'power-line', powerUnit);
       if (powerSeries) series.push(powerSeries);
     }
 
@@ -664,7 +701,7 @@ class CarHeaterCard extends HTMLElement {
     const runtime = showRuntime ? this.runtimeHistoryTemplate() : '';
 
     return `<div class="graph-box">
-      <div class="graph-head"><strong>${this.t('graph')}</strong><span>${this.t('past_future')}</span></div>
+      <div class="graph-head"><strong>${this.t('timeline')}</strong><span>${this.t('past_future')}</span></div>
       <svg class="history-graph" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
         <line class="grid" x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top}" y2="${pad.top}"></line>
         <line class="grid" x1="${pad.left}" x2="${width - pad.right}" y1="${plotBottom}" y2="${plotBottom}"></line>
@@ -691,9 +728,17 @@ class CarHeaterCard extends HTMLElement {
     const days = this.runtimeHistoryDays();
     const cache = this.history('runtime', entity, days * 24);
     const end = new Date();
-    const lastStart = this.dateAttr('last_start');
-    const lastStop = this.dateAttr('last_stop') || (this.isHeaterRunning(e) ? end : null);
-    const hasAttributeHistory = !!(lastStart && lastStop && lastStop > lastStart);
+    const history = this.attrPath('timeline.history') || this.attrPath('run_history') || [];
+    const historyRanges = Array.isArray(history) ? history.map((run) => {
+      const a = run?.start ? new Date(run.start) : null;
+      const b = run?.stop ? new Date(run.stop) : null;
+      return { start: a, stop: b };
+    }).filter((r) => r.start && r.stop && !Number.isNaN(r.start.getTime()) && !Number.isNaN(r.stop.getTime()) && r.stop > r.start) : [];
+    const previousRange = this.rangeFromPath('timeline.previous', 'previous_start', 'previous_stop');
+    const currentRange = this.rangeFromPath('timeline.current', 'current_start', 'current_stop');
+    if (currentRange.start && !currentRange.stop && this.isHeaterRunning(e)) currentRange.stop = end;
+    const attributeRanges = [...historyRanges, previousRange, currentRange].filter((r) => r.start && r.stop && r.stop > r.start);
+    const hasAttributeHistory = attributeRanges.length > 0;
     if (!cache && !hasAttributeHistory) return `<div class="runtime-history"><div class="label">${this.t('runtime_history')}</div><div class="empty">${this.t('loading')}</div></div>`;
     if (cache && !cache.rows.length && !hasAttributeHistory) return `<div class="runtime-history"><div class="label">${this.t('runtime_history')}</div><div class="empty">${this.t('no_history')}</div></div>`;
     const start = new Date(end);
@@ -726,9 +771,9 @@ class CarHeaterCard extends HTMLElement {
         a = dayEnd;
       }
     }
-    if (hasAttributeHistory) {
-      let a = Math.max(lastStart.getTime(), start.getTime());
-      const b = Math.min(lastStop.getTime(), end.getTime());
+    attributeRanges.forEach((range) => {
+      let a = Math.max(range.start.getTime(), start.getTime());
+      const b = Math.min(range.stop.getTime(), end.getTime());
       while (a < b) {
         const dayIndex = Math.floor((a - start.getTime()) / dayMs);
         if (dayIndex < 0 || dayIndex >= buckets.length) break;
@@ -736,7 +781,7 @@ class CarHeaterCard extends HTMLElement {
         buckets[dayIndex].minutes += (dayEnd - a) / 60000;
         a = dayEnd;
       }
-    }
+    });
     const maxMinutes = Math.max(1, ...buckets.map((b) => b.minutes));
     const bars = buckets.map((b) => {
       const height = Math.max(2, Math.round((b.minutes / maxMinutes) * 42));
@@ -785,7 +830,7 @@ class CarHeaterCard extends HTMLElement {
     const enabled = this.state(e.enable_switch, 'off');
     const once = this.state(e.one_time_switch, 'off');
     const status = this.friendlyStatus(this.state(e.status));
-    const powerEntity = e.power_sensor || this.config.power_sensor;
+    const powerEntity = this.powerEntity();
 
     const startDisabled = this.isUnavailable(e.start_now_button);
     const stopDisabled = this.isUnavailable(e.stop_button);
