@@ -45,5 +45,6 @@
   "now": "Nu",
   "past_future": "Historik ← nu → planering",
   "actual_runtime": "Faktisk gångtid",
-  "timeline": "Tidslinje"
+  "timeline": "Tidslinje",
+  "no_history": "Ingen historik"
 }

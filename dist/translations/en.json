@@ -45,5 +45,6 @@
   "now": "Now",
   "past_future": "History ← now → plan",
   "actual_runtime": "Actual runtime",
-  "timeline": "Timeline"
+  "timeline": "Timeline",
+  "no_history": "No history"
 }
