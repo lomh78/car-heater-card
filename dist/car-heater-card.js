@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.4.7';
+const CAR_HEATER_CARD_VERSION = '0.5.3';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 class CarHeaterCard extends HTMLElement {
@@ -129,8 +129,8 @@ class CarHeaterCard extends HTMLElement {
   }
 
   async ensureAutoEntities() {
-    if (!this._hass || this._autoLoading || Object.keys(this.config?.entities || {}).length) return;
-    const key = this.config?.device_id || '__first_car_heater_device__';
+    if (!this._hass || this._autoLoading || Object.keys(this.config?.entities || {}).length || !this.config?.device_id) return;
+    const key = this.config.device_id;
     if (this._autoConfigKey === key && this._autoEntities) return;
     this._autoLoading = true;
     try {
@@ -363,19 +363,24 @@ class CarHeaterCard extends HTMLElement {
 
   async ensureHistory() {
     if (!this._hass || !this.historyEnabled()) return;
-    const e = this.resolvedEntities;
-    if (this.config.show_temperature_graph) this.loadHistory('temperature', this.temperatureEntity(), this.graphHours());
-    if (this.config.show_power_graph) this.loadHistory('power', this.powerEntity(), this.graphHours());
-    if (this.config.show_planned_runtime) this.loadHistory('runtime_graph', e.heater_switch || e.status || this.powerEntity(), this.graphHours(), true);
-    if (this.config.show_runtime_history) this.loadHistory('runtime', e.heater_switch || e.status || this.powerEntity(), this.runtimeHistoryDays() * 24, true);
+
+    const timelineHours = this.graphHours();
+    const historyHours = Math.max(1, Math.ceil(timelineHours / 2));
+
+    if (this.config.show_temperature_graph) this.loadHistory('temperature', this.temperatureEntity(), historyHours);
+    if (this.config.show_power_graph) this.loadHistory('power', this.powerEntity(), historyHours);
+    if (this.config.show_runtime_history) {
+      const e = this.resolvedEntities;
+      this.loadHistory('runtime', e.heater_switch || e.status || this.powerEntity(), this.runtimeHistoryDays() * 24);
+    }
   }
 
-  async loadHistory(kind, entity, hours, forceFull = false) {
+  async loadHistory(kind, entity, hours) {
     if (!entity || !this._hass) return;
     const now = new Date();
     const cacheKey = `${kind}:${entity}:${hours}`;
     const cached = this._historyCache[cacheKey];
-    if (cached && now.getTime() - cached.loaded < 5 * 60 * 1000) return;
+    if (cached && now.getTime() - cached.loaded < 2 * 60 * 1000) return;
     if (this._historyLoading.has(cacheKey)) return;
     this._historyLoading.add(cacheKey);
     try {
@@ -390,10 +395,11 @@ class CarHeaterCard extends HTMLElement {
         no_attributes: true,
       });
       const rows = this.extractHistoryRows(result, entity);
-      this._historyCache[cacheKey] = { loaded: now.getTime(), start, end: now, entity, rows, forceFull };
+      this._historyCache[cacheKey] = { loaded: now.getTime(), start, end: now, entity, rows };
       if (!this._timePicker) this.render();
     } catch (err) {
-      console.warn(`car-heater-card: could not load ${kind} history`, err);
+      console.warn(`car-heater-card: could not load ${kind} history for ${entity}`, err);
+      this._historyCache[cacheKey] = { loaded: now.getTime(), start: new Date(now.getTime() - hours * 60 * 60 * 1000), end: now, entity, rows: [], error: String(err) };
     } finally {
       this._historyLoading.delete(cacheKey);
     }
@@ -402,7 +408,7 @@ class CarHeaterCard extends HTMLElement {
   extractHistoryRows(result, entity) {
     if (Array.isArray(result)) {
       if (Array.isArray(result[0])) return result[0];
-      if (result.length && (result[0]?.state !== undefined || result[0]?.last_changed)) return result;
+      if (result.length && (result[0]?.state !== undefined || result[0]?.s !== undefined || result[0]?.last_changed || result[0]?.lc || result[0]?.lu)) return result;
       return [];
     }
     if (result && typeof result === 'object') {
@@ -418,21 +424,46 @@ class CarHeaterCard extends HTMLElement {
     return this._historyCache[`${kind}:${entity}:${hours}`];
   }
 
+  historyRowState(row) {
+    if (!row) return undefined;
+    return row.state ?? row.s ?? row.State ?? row.value;
+  }
+
+  historyRowTimestamp(row) {
+    if (!row) return NaN;
+    const raw = row.last_changed ?? row.last_updated ?? row.lc ?? row.lu ?? row.t ?? row.time;
+    if (raw === undefined || raw === null || raw === '') return NaN;
+    if (typeof raw === 'number') {
+      // Home Assistant frontend history may return milliseconds or seconds depending on API version.
+      return raw > 100000000000 ? raw : raw * 1000;
+    }
+    const ts = new Date(raw).getTime();
+    return Number.isFinite(ts) ? ts : NaN;
+  }
+
   numericPoints(cache, entity, start, end) {
     const points = [];
     if (cache) {
       cache.rows.forEach((row) => {
-        const value = Number(row.state);
-        const ts = new Date(row.last_changed || row.last_updated).getTime();
-        if (Number.isFinite(value) && Number.isFinite(ts)) points.push({ ts, value });
+        const value = Number(this.historyRowState(row));
+        const ts = this.historyRowTimestamp(row);
+        if (Number.isFinite(value) && Number.isFinite(ts) && ts >= start.getTime() && ts <= end.getTime()) {
+          points.push({ ts, value });
+        }
       });
     }
+
     const current = Number(this.state(entity, ''));
     if (Number.isFinite(current)) {
       const nowTs = end instanceof Date ? end.getTime() : Date.now();
-      if (!points.length || Math.abs(points[points.length - 1].ts - nowTs) > 30000) points.push({ ts: nowTs, value: current });
+      if (!points.length || Math.abs(points[points.length - 1].ts - nowTs) > 30000) {
+        points.push({ ts: nowTs, value: current });
+      }
     }
-    return points.filter((p, i, arr) => i === 0 || p.ts !== arr[i - 1].ts).sort((a, b) => a.ts - b.ts);
+
+    return points
+      .sort((a, b) => a.ts - b.ts)
+      .filter((p, i, arr) => i === 0 || p.ts !== arr[i - 1].ts || p.value !== arr[i - 1].value);
   }
 
   timeToDateInRange(hhmm, start, end) {
@@ -579,8 +610,44 @@ class CarHeaterCard extends HTMLElement {
     return points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.ts).toFixed(1)} ${y(p.value).toFixed(1)}`).join(' ');
   }
 
+  timelineAxisMode() {
+    const mode = String(this.config.timeline_axis || 'relative').toLowerCase();
+    return mode === 'clock' || mode === 'absolute' ? 'clock' : 'relative';
+  }
+
+  formatTimelineTick(date, offsetHours) {
+    if (Math.abs(offsetHours) < 0.001) return this.t('now');
+    if (this.timelineAxisMode() === 'clock') {
+      return date.toLocaleTimeString(this.lang === 'sv' ? 'sv-SE' : 'en-US', { hour: '2-digit', minute: '2-digit' });
+    }
+    const sign = offsetHours < 0 ? '-' : '+';
+    const abs = Math.abs(offsetHours);
+    if (abs < 1) return `${sign}${Math.round(abs * 60)}m`;
+    if (Number.isInteger(abs)) return `${sign}${abs}h`;
+    const hours = Math.floor(abs);
+    const minutes = Math.round((abs - hours) * 60);
+    return hours > 0 ? `${sign}${hours}h${minutes ? ' ' + minutes + 'm' : ''}` : `${sign}${minutes}m`;
+  }
+
+  timelineTickOffsets(halfHours) {
+    const h = Number(halfHours);
+    if (!Number.isFinite(h) || h <= 0) return [0];
+    if (h <= 0.5) return [-0.5, 0, 0.5].filter((v) => Math.abs(v) <= h + 0.001);
+    if (h <= 1) return [-1, -0.5, 0, 0.5, 1].filter((v) => Math.abs(v) <= h + 0.001);
+    if (h <= 2) return [-2, -1, 0, 1, 2].filter((v) => Math.abs(v) <= h + 0.001);
+    if (h <= 3) return [-3, -2, -1, 0, 1, 2, 3].filter((v) => Math.abs(v) <= h + 0.001);
+    if (h <= 6) return [-6, -4, -2, 0, 2, 4, 6].filter((v) => Math.abs(v) <= h + 0.001);
+    if (h <= 12) return [-12, -8, -4, 0, 4, 8, 12].filter((v) => Math.abs(v) <= h + 0.001);
+    const step = h <= 24 ? 12 : 24;
+    const offsets = [];
+    for (let v = -Math.floor(h / step) * step; v <= h + 0.001; v += step) {
+      if (Math.abs(v) <= h + 0.001) offsets.push(v);
+    }
+    if (!offsets.includes(0)) offsets.push(0);
+    return offsets.sort((a, b) => a - b);
+  }
+
   chartTemplate() {
-    const e = this.resolvedEntities;
     const showTemp = !!this.config.show_temperature_graph;
     const showPower = !!this.config.show_power_graph;
     const showRuntime = !!this.config.show_runtime_history;
@@ -589,113 +656,150 @@ class CarHeaterCard extends HTMLElement {
 
     const hours = this.graphHours();
     const halfHours = hours / 2;
+    const historyHours = Math.max(1, Math.ceil(halfHours));
     const now = new Date();
     const graphStart = new Date(now.getTime() - halfHours * 60 * 60 * 1000);
     const graphEnd = new Date(now.getTime() + halfHours * 60 * 60 * 1000);
-    const width = 600;
-    const height = 196;
-    const pad = { left: 42, right: 14, top: 16, bottom: 44 };
-    const plotBottom = height - pad.bottom;
-    const plotHeight = plotBottom - pad.top;
-    const x = (ts) => pad.left + ((ts - graphStart.getTime()) / (graphEnd.getTime() - graphStart.getTime())) * (width - pad.left - pad.right);
-    const nowX = x(now.getTime());
 
-    const buildSeries = (key, label, entity, cacheKind, cls, unit) => {
+    const width = 640;
+    const height = 226;
+    const pad = { left: 68, right: 16, top: 18, bottom: 18 };
+    const plotWidth = width - pad.left - pad.right;
+    const plotRight = width - pad.right;
+    const x = (ts) => pad.left + ((ts - graphStart.getTime()) / (graphEnd.getTime() - graphStart.getTime())) * plotWidth;
+    const nowX = x(now.getTime());
+    const valueX = nowX + ((plotRight - nowX) * 0.50);
+
+    const lanes = {
+      temp: { top: 24, bottom: 72, label: this.t('temperature') },
+      power: { top: 88, bottom: 136, label: this.t('power') },
+      runtime: { top: 156, bottom: 192, label: this.t('running_time') },
+    };
+
+    const laneGrid = Object.values(lanes).map((lane) => `
+      <text class="lane-label" x="8" y="${((lane.top + lane.bottom) / 2).toFixed(1)}">${lane.label}</text>
+      <line class="lane-grid" x1="${pad.left}" x2="${plotRight}" y1="${lane.bottom}" y2="${lane.bottom}"></line>
+    `).join('');
+
+    const makeTempSeries = () => {
+      const entity = this.temperatureEntity();
       if (!entity) return null;
-      const cache = this.history(cacheKind, entity, hours);
+      const cache = this.history('temperature', entity, historyHours);
       const points = this.numericPoints(cache, entity, graphStart, now).filter((p) => p.ts >= graphStart.getTime() && p.ts <= now.getTime());
       if (!points.length) return null;
       let min = Infinity;
       let max = -Infinity;
-      points.forEach((p) => { min = Math.min(min, p.value); max = Math.max(max, p.value); });
+      points.forEach((pnt) => { min = Math.min(min, pnt.value); max = Math.max(max, pnt.value); });
       if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
-      if (min === max) { min -= 1; max += 1; }
-      const range = max - min;
-      min -= range * 0.10;
-      max += range * 0.10;
-      return { key, label, entity, points, min, max, unit, cls };
+      if (min === max) { min -= 0.5; max += 0.5; }
+      const range = Math.max(0.1, max - min);
+      min -= range * 0.12;
+      max += range * 0.12;
+      const lane = lanes.temp;
+      const y = (value) => lane.bottom - ((value - min) / (max - min)) * (lane.bottom - lane.top);
+      const unit = this.attrPath('temperature.unit') || this.unit(entity) || '°C';
+      return { key: 'temperature', entity, points, min, max, unit, lane, y };
     };
 
-    const series = [];
-    if (showTemp) {
-      const tempEntity = this.temperatureEntity();
-      const tempUnit = this.attrPath('temperature.unit') || this.unit(tempEntity) || '°C';
-      const tempSeries = buildSeries('temperature', this.t('temperature'), tempEntity, 'temperature', 'temp-line', tempUnit);
-      if (tempSeries) series.push(tempSeries);
-    }
-    if (showPower) {
-      const pEntity = this.powerEntity();
-      const powerUnit = this.attrPath('power_sensor.unit') || this.unit(pEntity) || 'W';
-      const powerSeries = buildSeries('power', this.t('power'), pEntity, 'power', 'power-line', powerUnit);
-      if (powerSeries) series.push(powerSeries);
-    }
+    const makePowerSeries = () => {
+      const entity = this.powerEntity();
+      if (!entity) return null;
+      const cache = this.history('power', entity, historyHours);
+      const points = this.numericPoints(cache, entity, graphStart, now).filter((p) => p.ts >= graphStart.getTime() && p.ts <= now.getTime());
+      if (!points.length) return null;
+      const positiveValues = points.map((pnt) => Math.max(0, pnt.value)).filter((value) => Number.isFinite(value));
+      const max = Math.max(1, ...positiveValues);
+      const lane = lanes.power;
+      const y = (value) => lane.bottom - (Math.max(0, value) / max) * (lane.bottom - lane.top);
+      const unit = this.attrPath('power_sensor.unit') || this.unit(entity) || 'W';
+      return { key: 'power', entity, points, min: 0, max, unit, lane, y };
+    };
 
-    const yForSeries = (s, value) => pad.top + (1 - (value - s.min) / (s.max - s.min)) * plotHeight;
-    const linesSvg = series.map((s) => {
-      if (s.points.length > 1) return `<path class="${s.cls}" d="${this.linePath(s.points, x, (v) => yForSeries(s, v))}"></path>`;
-      const p = s.points[0];
-      return `<circle class="${s.cls}-dot" cx="${x(p.ts).toFixed(1)}" cy="${yForSeries(s, p.value).toFixed(1)}" r="3.5"></circle>`;
-    }).join('');
+    const tempSeries = showTemp ? makeTempSeries() : null;
+    const powerSeries = showPower ? makePowerSeries() : null;
 
-    const seriesLabels = series.map((s, index) => {
-      const y = pad.top + 13 + index * 16;
-      const current = s.points[s.points.length - 1]?.value;
+    const tempSvg = tempSeries ? (() => {
+      const path = this.linePath(tempSeries.points, x, tempSeries.y);
+      if (tempSeries.points.length > 1) return `<path class="temp-line" d="${path}"></path>`;
+      const pnt = tempSeries.points[0];
+      return `<circle class="temp-line-dot" cx="${x(pnt.ts).toFixed(1)}" cy="${tempSeries.y(pnt.value).toFixed(1)}" r="3.5"></circle>`;
+    })() : '';
+
+    const powerSvg = powerSeries ? (() => {
+      const minBarWidth = 2.5;
+      return powerSeries.points.map((pnt, index, arr) => {
+        const x1 = Math.max(pad.left, x(pnt.ts));
+        const nextTs = arr[index + 1]?.ts ?? now.getTime();
+        const x2 = Math.min(nowX, x(nextTs));
+        const barWidth = Math.max(minBarWidth, x2 - x1 - 1);
+        if (x1 > nowX || x2 < pad.left) return '';
+        const barTop = powerSeries.y(pnt.value);
+        const barHeight = Math.max(1, powerSeries.lane.bottom - barTop);
+        return `<rect class="power-bar" x="${x1.toFixed(1)}" y="${barTop.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="1.2"></rect>`;
+      }).join('');
+    })() : '';
+
+    const currentValueLabel = (series, cls) => {
+      if (!series?.points?.length) return '';
+      const current = series.points[series.points.length - 1]?.value;
+      if (!Number.isFinite(current)) return '';
       const decimals = Math.abs(current) < 20 ? 1 : 0;
-      const text = Number.isFinite(current) ? `${s.label}: ${current.toFixed(decimals)} ${s.unit}` : s.label;
-      return `<text class="axis-label ${s.key}-label" x="${width - pad.right - 4}" y="${y}" text-anchor="end">${text}</text>`;
-    }).join('');
+      const yPos = ((series.lane.top + series.lane.bottom) / 2).toFixed(1);
+      return `<text class="current-value ${cls}" x="${valueX.toFixed(1)}" y="${yPos}" text-anchor="middle">${current.toFixed(decimals)} ${series.unit}</text>`;
+    };
+
+    const valueLabels = `${currentValueLabel(tempSeries, 'temp-value')}${currentValueLabel(powerSeries, 'power-value')}`;
 
     const { ranges, departures } = this.scheduledRanges(graphStart, graphEnd);
     const actualRanges = showPlan ? this.actualRuntimeRanges(graphStart, now) : [];
-    const bandHeight = 8;
-    const actualY = plotBottom + 7;
-    const plannedY = plotBottom + 20;
+    const bandHeight = 10;
+    const actualY = lanes.runtime.top + 3;
+    const currentY = lanes.runtime.top + 16;
+    const plannedY = lanes.runtime.top + 29;
 
     const bandRect = (cls, r, yPos) => {
       const x1 = Math.max(pad.left, x(r.start.getTime()));
-      const x2 = Math.min(width - pad.right, x(r.stop.getTime()));
+      const x2 = Math.min(plotRight, x(r.stop.getTime()));
       if (x2 <= x1) return '';
-      return `<rect class="${cls}" x="${x1.toFixed(1)}" y="${yPos}" width="${(x2 - x1).toFixed(1)}" height="${bandHeight}" rx="4"></rect>`;
+      return `<rect class="${cls}" x="${x1.toFixed(1)}" y="${yPos}" width="${(x2 - x1).toFixed(1)}" height="${bandHeight}" rx="5"></rect>`;
     };
 
-    const marker = (cls, date, label, y2 = plotBottom + 31) => {
-      if (!date || date < graphStart || date > graphEnd) return '';
-      const xx = x(date.getTime()).toFixed(1);
-      return `<line class="${cls}" x1="${xx}" x2="${xx}" y1="${pad.top}" y2="${y2}"></line><text class="axis-label marker-label" x="${xx}" y="${pad.top - 4}" text-anchor="middle">${label}</text>`;
-    };
-
-    const actualSvg = showPlan ? actualRanges.map((r) => bandRect('actual-band', r, actualY)).join('') : '';
+    const isCurrentRange = (r) => r.stop && Math.abs(r.stop.getTime() - now.getTime()) < 90000 && this.isHeaterRunning(this.resolvedEntities);
+    const actualSvg = showPlan ? actualRanges.map((r) => bandRect(isCurrentRange(r) ? 'current-band' : 'actual-band', r, isCurrentRange(r) ? currentY : actualY)).join('') : '';
     const planSvg = showPlan ? ranges.map((r) => bandRect('planned-band', r, plannedY)).join('') : '';
 
+    const marker = (cls, date, label, y2 = lanes.runtime.bottom + 3) => {
+      if (!date || date < graphStart || date > graphEnd) return '';
+      const xx = x(date.getTime()).toFixed(1);
+      return `<line class="${cls}" x1="${xx}" x2="${xx}" y1="${pad.top}" y2="${y2}"></line><text class="axis-label marker-label" x="${xx}" y="${pad.top - 5}" text-anchor="middle">${label}</text>`;
+    };
+
     const plannedMarkers = showPlan ? ranges.map((r) => `${marker('start-line', r.start, this.t('start'))}${marker('stop-line', r.stop, this.t('stop'))}`).join('') : '';
-    const actualMarkers = showPlan ? actualRanges.map((r) => `${marker('actual-start-line', r.start, this.t('start'))}${marker('actual-stop-line', r.stop, this.t('stop'))}`).join('') : '';
     const depSvg = showPlan ? departures.map((d) => marker('departure-line', d, this.t('departure'))).join('') : '';
-    const nowSvg = `<line class="now-line" x1="${nowX.toFixed(1)}" x2="${nowX.toFixed(1)}" y1="${pad.top}" y2="${plotBottom + 31}"></line><text class="axis-label now-label" x="${nowX.toFixed(1)}" y="${height - 5}" text-anchor="middle">${this.t('now')}</text>`;
+    const nowSvg = `<line class="now-line" x1="${nowX.toFixed(1)}" x2="${nowX.toFixed(1)}" y1="${pad.top}" y2="${height - pad.bottom}"></line>`;
 
-    const tickStep = halfHours <= 4 ? 1 : halfHours <= 8 ? 2 : halfHours <= 12 ? 3 : 6;
-    const ticks = [];
-    for (let h = -Math.floor(halfHours); h <= Math.floor(halfHours); h += tickStep) {
-      if (h === 0) continue;
-      const tickDate = new Date(now.getTime() + h * 60 * 60 * 1000);
-      if (tickDate < graphStart || tickDate > graphEnd) continue;
-      const xx = x(tickDate.getTime()).toFixed(1);
-      const label = h < 0 ? `${h}h` : `+${h}h`;
-      ticks.push(`<line class="tick-line" x1="${xx}" x2="${xx}" y1="${plotBottom}" y2="${plotBottom + 4}"></line><text class="axis-label tick-label" x="${xx}" y="${height - 5}" text-anchor="middle">${label}</text>`);
-    }
-    const ticksSvg = ticks.join('');
+    const axisY = height - 8;
+    const tickTop = height - pad.bottom;
+    const tickBottom = tickTop + 5;
+    const ticks = this.timelineTickOffsets(halfHours).map((offset) => {
+      const tickDate = new Date(now.getTime() + offset * 60 * 60 * 1000);
+      if (tickDate < graphStart || tickDate > graphEnd) return '';
+      const xx = x(tickDate.getTime());
+      const anchor = Math.abs(offset + halfHours) < 0.01 ? 'start' : Math.abs(offset - halfHours) < 0.01 ? 'end' : 'middle';
+      const cls = Math.abs(offset) < 0.001 ? 'tick-label now-label' : 'tick-label';
+      return `<line class="tick-line" x1="${xx.toFixed(1)}" x2="${xx.toFixed(1)}" y1="${tickTop}" y2="${tickBottom}"></line><text class="axis-label ${cls}" x="${xx.toFixed(1)}" y="${axisY}" text-anchor="${anchor}">${this.formatTimelineTick(tickDate, offset)}</text>`;
+    }).join('');
+    const ticksSvg = ticks;
 
-    const axisText = series.length === 1
-      ? `<text class="axis-label" x="4" y="${pad.top + 4}">${series[0].max.toFixed(series[0].max < 20 ? 1 : 0)} ${series[0].unit}</text><text class="axis-label" x="4" y="${plotBottom + 4}">${series[0].min.toFixed(series[0].min < 20 ? 1 : 0)} ${series[0].unit}</text>`
-      : '';
-
-    const noData = (showTemp || showPower) && !series.length
-      ? `<text class="axis-label" x="${width / 2}" y="${pad.top + plotHeight / 2}" text-anchor="middle">${this.t('no_history')}</text>`
-      : '';
+    const missing = [];
+    if (showTemp && !tempSeries) missing.push(this.t('temperature'));
+    if (showPower && !powerSeries) missing.push(this.t('power'));
+    const noData = missing.length ? `<text class="axis-label" x="${pad.left + 8}" y="${lanes.power.bottom + 14}">${this.t('no_history')}: ${missing.join(', ')}</text>` : '';
 
     const legend = [
       ...(showTemp ? [`<span><i class="dot temp"></i>${this.t('temperature')}</span>`] : []),
       ...(showPower ? [`<span><i class="dot power"></i>${this.t('power')}</span>`] : []),
-      ...(showPlan ? [`<span><i class="dot actual"></i>${this.t('actual_runtime')}</span>`, `<span><i class="dot plan"></i>${this.t('planned_runtime')}</span>`] : []),
+      ...(showPlan ? [`<span><i class="dot actual"></i>${this.t('actual_runtime')}</span>`, `<span><i class="dot current"></i>${this.t('status.running')}</span>`, `<span><i class="dot plan"></i>${this.t('planned_runtime')}</span>`] : []),
     ].join('');
 
     const runtime = showRuntime ? this.runtimeHistoryTemplate() : '';
@@ -703,16 +807,15 @@ class CarHeaterCard extends HTMLElement {
     return `<div class="graph-box">
       <div class="graph-head"><strong>${this.t('timeline')}</strong><span>${this.t('past_future')}</span></div>
       <svg class="history-graph" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-        <line class="grid" x1="${pad.left}" x2="${width - pad.right}" y1="${pad.top}" y2="${pad.top}"></line>
-        <line class="grid" x1="${pad.left}" x2="${width - pad.right}" y1="${plotBottom}" y2="${plotBottom}"></line>
-        ${axisText}
+        <rect class="graph-bg" x="${pad.left}" y="${pad.top}" width="${plotWidth}" height="${height - pad.top - pad.bottom}"></rect>
+        ${laneGrid}
         ${ticksSvg}
         ${depSvg}
         ${plannedMarkers}
-        ${actualMarkers}
         ${nowSvg}
-        ${linesSvg}
-        ${seriesLabels}
+        ${tempSvg}
+        ${powerSvg}
+        ${valueLabels}
         ${actualSvg}
         ${planSvg}
         ${noData}
@@ -854,22 +957,33 @@ class CarHeaterCard extends HTMLElement {
           .graph-box { border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
           .graph-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
           .graph-head span { color:var(--secondary-text-color); font-size:12px; }
-          .history-graph { width:100%; height:150px; border-radius:14px; background:var(--card-background-color); }
-          .grid { stroke:var(--divider-color); stroke-width:1; }
-          .temp-line { fill:none; stroke:var(--info-color, #2196f3); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
-          .power-line { fill:none; stroke:#ab47bc; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+          .history-graph { width:100%; height:214px; border-radius:14px 14px 6px 6px; background:var(--card-background-color); overflow:visible; display:block; }
+          .graph-bg { fill:var(--card-background-color); }
+          .lane-grid { stroke:var(--divider-color); stroke-width:1; opacity:.75; vector-effect:non-scaling-stroke; }
+          .lane-label { fill:var(--secondary-text-color); font-size:11px; font-weight:700; dominant-baseline:middle; }
+          .temp-line { fill:none; stroke:var(--info-color, #2196f3); stroke-width:2.6; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+          .power-line { fill:none; stroke:#7e57c2; stroke-width:2.6; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+          .power-bar { fill:#ab47bc; opacity:.82; }
           .temp-line-dot { fill:var(--info-color, #2196f3); stroke:var(--card-background-color); stroke-width:2; vector-effect:non-scaling-stroke; }
-          .power-line-dot { fill:#ab47bc; stroke:var(--card-background-color); stroke-width:2; vector-effect:non-scaling-stroke; }
-          .planned-band { fill:rgba(255,193,7,.75); stroke:none; }
-          .actual-band { fill:rgba(255,152,0,.80); stroke:none; }
-          .now-line { stroke:#4caf50; stroke-width:1.6; opacity:.95; vector-effect:non-scaling-stroke; }
+          .power-line-dot { fill:#7e57c2; stroke:var(--card-background-color); stroke-width:2; vector-effect:non-scaling-stroke; }
+          .current-value { fill:var(--primary-text-color); font-size:17px; font-weight:800; dominant-baseline:middle; paint-order:stroke; stroke:var(--card-background-color); stroke-width:4px; stroke-linejoin:round; }
+          .temp-value { fill:var(--info-color, #2196f3); }
+          .power-value { fill:#ab47bc; }
+          .planned-band { fill:rgba(184,134,11,.78); stroke:none; }
+          .actual-band { fill:rgba(255,152,0,.82); stroke:none; }
+          .current-band { fill:rgba(255,213,79,.92); stroke:none; }
+          .now-line { stroke:#66bb6a; stroke-width:1.8; opacity:.95; vector-effect:non-scaling-stroke; }
           .axis-label { fill:var(--secondary-text-color); font-size:11px; dominant-baseline:middle; }
-          .now-label { font-size:10px; opacity:.85; }
+          .now-label { font-size:10px; opacity:.9; font-weight:700; }
           .departure-line { stroke:#42a5f5; stroke-width:1.8; stroke-dasharray:5 4; vector-effect:non-scaling-stroke; }
-          .start-line, .actual-start-line { stroke:#ff9800; stroke-width:1.6; stroke-dasharray:3 4; vector-effect:non-scaling-stroke; }
-          .stop-line, .actual-stop-line { stroke:#ef5350; stroke-width:1.6; stroke-dasharray:3 4; vector-effect:non-scaling-stroke; }
+          .start-line { stroke:#ff9800; stroke-width:1.5; stroke-dasharray:3 4; vector-effect:non-scaling-stroke; }
+          .stop-line { stroke:#ef5350; stroke-width:1.5; stroke-dasharray:3 4; vector-effect:non-scaling-stroke; }
           .tick-line { stroke:var(--divider-color); stroke-width:1; vector-effect:non-scaling-stroke; }
-          .tick-label { font-size:9.5px; }
+          .tick-label { font-size:10px; font-weight:700; }
+          .timeline-axis { position:relative; height:20px; margin:3px 16px 0 68px; color:var(--secondary-text-color); font-size:11px; font-weight:700; }
+          .timeline-axis span { position:absolute; top:0; transform:translateX(-50%); white-space:nowrap; }
+          .timeline-axis span:nth-child(1) { transform:translateX(0); }
+          .timeline-axis span:last-child { transform:translateX(-100%); }
           .marker-label { font-size:9px; opacity:.85; }
           .graph-legend { display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; color:var(--secondary-text-color); font-size:12px; }
           .graph-legend span { display:flex; align-items:center; gap:5px; }
@@ -877,7 +991,8 @@ class CarHeaterCard extends HTMLElement {
           .dot.temp { background:var(--info-color, #2196f3); }
           .dot.power { background:#ab47bc; }
           .dot.actual { background:#ff9800; }
-          .dot.plan { background:#ffeb3b; }
+          .dot.current { background:#ffd54f; }
+          .dot.plan { background:#b8860b; }
           .runtime-history { margin-top:10px; }
           .runtime-bars { height:62px; display:flex; align-items:end; gap:7px; padding:8px 2px 0; }
           .runtime-day { flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; gap:4px; color:var(--secondary-text-color); font-size:10px; }
@@ -1065,21 +1180,24 @@ class CarHeaterCardEditor extends HTMLElement {
       <div class="editor">
         <label>Car Heater device
           <select id="device">
-            <option value="">Auto detect</option>
+            <option value="">Select Car Heater device</option>
             ${deviceOptions}
           </select>
         </label>
         <label>Title
           <input id="title" value="${cfg.title || ''}" placeholder="Car Heater">
         </label>
-        <label>Power sensor, optional
-          <input id="power" value="${cfg.power_sensor || cfg.entities?.power_sensor || ''}" placeholder="sensor.motorvarmare_forbrukning">
-        </label>
         <label>Language, optional
           <input id="language" value="${cfg.language || ''}" placeholder="sv / en / auto">
         </label>
         <label>Graph hours
           <input id="graph_hours" type="number" min="1" max="168" value="${cfg.graph_hours ?? 24}">
+        </label>
+        <label>Timeline axis
+          <select id="timeline_axis">
+            <option value="relative" ${cfg.timeline_axis !== 'clock' ? 'selected' : ''}>Relative</option>
+            <option value="clock" ${cfg.timeline_axis === 'clock' ? 'selected' : ''}>Clock time</option>
+          </select>
         </label>
         <label>Runtime history days
           <input id="runtime_days" type="number" min="1" max="31" value="${cfg.runtime_history_days ?? 7}">
@@ -1099,19 +1217,19 @@ class CarHeaterCardEditor extends HTMLElement {
         <label>
           <span><input id="show_runtime_history" type="checkbox" ${cfg.show_runtime_history ? 'checked' : ''}> Show daily runtime history</span>
         </label>
-        <div class="hint">The card detects entities from the selected Car Heater device. Use YAML only if you want to override individual entity IDs.</div>
+        <div class="hint">Select the Car Heater device. The card then reads the configured power sensor and timeline data from the integration.</div>
       </div>`;
     this.shadowRoot.querySelector('#device')?.addEventListener('change', (ev) => this.valueChanged({ device_id: ev.target.value, entities: undefined }));
-    this.shadowRoot.querySelector('#title')?.addEventListener('change', (ev) => this.valueChanged({ title: ev.target.value }));
-    this.shadowRoot.querySelector('#power')?.addEventListener('change', (ev) => this.valueChanged({ power_sensor: ev.target.value }));
-    this.shadowRoot.querySelector('#language')?.addEventListener('change', (ev) => this.valueChanged({ language: ev.target.value }));
+    this.shadowRoot.querySelector('#title')?.addEventListener('input', (ev) => this.valueChanged({ title: ev.target.value }));
+        this.shadowRoot.querySelector('#language')?.addEventListener('input', (ev) => this.valueChanged({ language: ev.target.value }));
     this.shadowRoot.querySelector('#show_settings')?.addEventListener('change', (ev) => this.valueChanged({ show_time_settings: ev.target.checked }));
     this.shadowRoot.querySelector('#show_temperature_graph')?.addEventListener('change', (ev) => this.valueChanged({ show_temperature_graph: ev.target.checked }));
     this.shadowRoot.querySelector('#show_power_graph')?.addEventListener('change', (ev) => this.valueChanged({ show_power_graph: ev.target.checked }));
     this.shadowRoot.querySelector('#show_planned_runtime')?.addEventListener('change', (ev) => this.valueChanged({ show_planned_runtime: ev.target.checked }));
     this.shadowRoot.querySelector('#show_runtime_history')?.addEventListener('change', (ev) => this.valueChanged({ show_runtime_history: ev.target.checked }));
-    this.shadowRoot.querySelector('#graph_hours')?.addEventListener('change', (ev) => this.valueChanged({ graph_hours: Number(ev.target.value) || 24 }));
-    this.shadowRoot.querySelector('#runtime_days')?.addEventListener('change', (ev) => this.valueChanged({ runtime_history_days: Number(ev.target.value) || 7 }));
+    this.shadowRoot.querySelector('#graph_hours')?.addEventListener('input', (ev) => this.valueChanged({ graph_hours: Number(ev.target.value) || 24 }));
+    this.shadowRoot.querySelector('#timeline_axis')?.addEventListener('change', (ev) => this.valueChanged({ timeline_axis: ev.target.value }));
+    this.shadowRoot.querySelector('#runtime_days')?.addEventListener('input', (ev) => this.valueChanged({ runtime_history_days: Number(ev.target.value) || 7 }));
   }
 }
 
