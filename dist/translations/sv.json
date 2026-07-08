@@ -35,7 +35,7 @@
     "unknown": "Okänd",
     "no_departure": "Ingen avresa",
     "finished": "Klar",
-    "no_heating_needed": "Ingen värme behövs"
+    "no_heating_needed": "Ingen värmning behövs"
   },
   "graph": "Graf",
   "hours_short": " h",
@@ -44,7 +44,11 @@
   "loading": "Laddar...",
   "now": "Nu",
   "past_future": "Historik ← nu → planering",
-  "actual_runtime": "Faktisk gångtid",
+  "actual_runtime": "Historisk gångtid",
   "timeline": "Tidslinje",
-  "no_history": "Ingen historik"
+  "historical_runtime": "Historisk gångtid",
+  "no_history": "Ingen historik",
+  "heat_curve": "Värmekurva",
+  "automatic_calculation": "Automatisk beräkning",
+  "manual_calculation": "Manuell beräkning"
 }
