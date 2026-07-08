@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.5.8';
+const CAR_HEATER_CARD_VERSION = '0.5.12';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 class CarHeaterCard extends HTMLElement {
@@ -14,6 +14,9 @@ class CarHeaterCard extends HTMLElement {
     this._historyCache = {};
     this._historyLoading = new Set();
     this._heatCurveOpen = false;
+    this._activeSlideDrag = false;
+    this._activeSlideEntity = null;
+    this._pendingSwitchStates = new Map();
   }
 
   setConfig(config) {
@@ -80,10 +83,12 @@ class CarHeaterCard extends HTMLElement {
     this.ensureTranslations();
     this.ensureAutoEntities();
     this.ensureHistory();
-    // Do not re-render while the time picker is open. Home Assistant pushes
-    // frequent state updates, and a re-render would reset the wheel/select
-    // back to the stored entity value before the user has time to save.
+    this.cleanPendingSwitchStates();
+    // Do not re-render while the time picker or slide control is active.
+    // Home Assistant pushes frequent state updates, and a re-render would reset
+    // in-progress UI interactions back to the stored entity value.
     if (this._timePicker && this.shadowRoot.querySelector('.picker-overlay')) return;
+    if (this._activeSlideDrag) return;
     this.render();
   }
 
@@ -200,7 +205,30 @@ class CarHeaterCard extends HTMLElement {
 
   obj(entity) { return entity ? this._hass?.states?.[entity] : undefined; }
 
+  pendingSwitchState(entity) {
+    if (!entity || !this._pendingSwitchStates) return undefined;
+    const pending = this._pendingSwitchStates.get(entity);
+    if (!pending) return undefined;
+    if (Date.now() > pending.expires) {
+      this._pendingSwitchStates.delete(entity);
+      return undefined;
+    }
+    return pending.state;
+  }
+
+  cleanPendingSwitchStates() {
+    if (!this._pendingSwitchStates || !this._hass) return;
+    for (const [entity, pending] of this._pendingSwitchStates.entries()) {
+      const current = this._hass.states?.[entity]?.state;
+      if (current === pending.state || Date.now() > pending.expires) {
+        this._pendingSwitchStates.delete(entity);
+      }
+    }
+  }
+
   state(entity, fallback = '—') {
+    const pending = this.pendingSwitchState(entity);
+    if (pending !== undefined) return pending;
     const obj = this.obj(entity);
     if (!obj || obj.state === 'unknown' || obj.state === 'unavailable' || obj.state === '') return fallback;
     return obj.state;
@@ -267,7 +295,15 @@ class CarHeaterCard extends HTMLElement {
 
   setSwitch(entity, on) {
     if (!entity || !this._hass) return;
-    this._hass.callService('switch', on ? 'turn_on' : 'turn_off', { entity_id: entity });
+    const state = on ? 'on' : 'off';
+    this._pendingSwitchStates?.set(entity, { state, expires: Date.now() + 8000 });
+    this.render();
+    this._hass.callService('switch', on ? 'turn_on' : 'turn_off', { entity_id: entity })
+      .catch((err) => {
+        console.warn('car-heater-card: could not set switch', entity, err);
+        this._pendingSwitchStates?.delete(entity);
+        this.render();
+      });
   }
 
   press(entity) {
@@ -301,6 +337,117 @@ class CarHeaterCard extends HTMLElement {
         if (action === 'more') this.moreInfo(entity);
         if (action === 'pick-time') this.openTimePicker(entity, el.dataset.label || this.t('time'));
       });
+    });
+  }
+
+  bindSlideToggles() {
+    this.shadowRoot.querySelectorAll('.slide-toggle').forEach((slider) => {
+      const entity = slider.dataset.entity;
+      if (!entity) return;
+      const initialOn = slider.dataset.state === 'on';
+
+      const getMax = () => {
+        const rect = slider.getBoundingClientRect();
+        return Math.max(0, rect.width - 44);
+      };
+      const updateText = (on) => {
+        const text = slider.querySelector('.slide-track-text');
+        if (text) text.textContent = `${this.t('one_time')} · ${on ? this.t('state.on') : this.t('state.off')}`;
+      };
+      const setSliderState = (on) => {
+        slider.dataset.state = on ? 'on' : 'off';
+        slider.classList.toggle('on', on);
+        updateText(on);
+      };
+      const setVisual = (x) => {
+        const max = getMax();
+        const pos = Math.max(0, Math.min(max, x));
+        slider.style.setProperty('--slide-x', `${pos}px`);
+        return { pos, max };
+      };
+      const snapVisual = (on) => {
+        setSliderState(on);
+        const apply = () => slider.style.setProperty('--slide-x', `${on ? getMax() : 0}px`);
+        apply();
+        requestAnimationFrame(apply);
+      };
+      snapVisual(initialOn);
+
+      let dragging = false;
+      let pointerId = null;
+      let startClientX = 0;
+      let startClientY = 0;
+      let startPos = 0;
+      let horizontalDrag = false;
+
+      const move = (ev) => {
+        if (!dragging || (pointerId !== null && ev.pointerId !== pointerId)) return;
+        const dx = ev.clientX - startClientX;
+        const dy = ev.clientY - startClientY;
+
+        // Mouse users usually expect the full control to be draggable immediately.
+        // Touch users keep vertical scrolling unless the movement is clearly horizontal.
+        if (!horizontalDrag && (ev.pointerType === 'mouse' || (Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy)))) {
+          horizontalDrag = true;
+          slider.classList.add('dragging');
+          this._activeSlideDrag = true;
+          this._activeSlideEntity = entity;
+          try { slider.setPointerCapture?.(ev.pointerId); } catch (_) { /* ignore */ }
+        }
+        if (!horizontalDrag) return;
+
+        ev.preventDefault();
+        ev.stopPropagation();
+        setVisual(startPos + dx);
+      };
+
+      const finish = (ev) => {
+        if (!dragging || (pointerId !== null && ev?.pointerId !== undefined && ev.pointerId !== pointerId)) return;
+        if (horizontalDrag) {
+          ev?.preventDefault?.();
+          ev?.stopPropagation?.();
+        }
+
+        dragging = false;
+        pointerId = null;
+        try { slider.releasePointerCapture?.(ev?.pointerId); } catch (_) { /* ignore */ }
+        slider.classList.remove('dragging');
+        this._activeSlideDrag = false;
+        this._activeSlideEntity = null;
+
+        const currentState = slider.dataset.state === 'on';
+        if (!horizontalDrag) {
+          snapVisual(currentState);
+          return;
+        }
+
+        const max = getMax();
+        const current = Number.parseFloat(getComputedStyle(slider).getPropertyValue('--slide-x')) || 0;
+        // Switch when the knob passes the middle. This feels much less picky on desktop.
+        const targetOn = current >= max * 0.50;
+        const shouldChange = targetOn !== currentState;
+        snapVisual(targetOn);
+        if (shouldChange) this.setSwitch(entity, targetOn);
+        else window.setTimeout(() => snapVisual(currentState), 180);
+      };
+
+      slider.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== undefined && ev.button !== 0) return;
+        // Do not prevent default here for touch; vertical page scrolling must keep working
+        // until we know the user is actually dragging horizontally.
+        if (ev.pointerType === 'mouse') ev.preventDefault();
+        dragging = true;
+        pointerId = ev.pointerId;
+        horizontalDrag = false;
+        startClientX = ev.clientX;
+        startClientY = ev.clientY;
+        startPos = (slider.dataset.state === 'on') ? getMax() : 0;
+        setVisual(startPos);
+      });
+
+      slider.addEventListener('pointermove', move);
+      slider.addEventListener('pointerup', finish);
+      slider.addEventListener('pointercancel', finish);
     });
   }
 
@@ -1046,15 +1193,16 @@ class CarHeaterCard extends HTMLElement {
           .state-pill { padding:6px 10px; border-radius:999px; background:var(--secondary-background-color); font-size:13px; font-weight:700; text-transform:none; display:flex; align-items:center; gap:6px; }
           .state-pill ha-icon { --mdc-icon-size:18px; color:var(--disabled-text-color); }
           .state-pill.on ha-icon { color:#ffeb3b; filter:drop-shadow(0 0 4px rgba(255,235,59,.45)); }
-          .mini-pill { padding:5px 10px; border-radius:999px; background:var(--secondary-background-color); border:1px solid var(--divider-color); font-size:13px; font-weight:800; display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:var(--primary-text-color); line-height:1; min-height:28px; }
+          .mini-pill { box-sizing:border-box; height:28px; padding:0 10px; border-radius:999px; background:var(--secondary-background-color); border:1px solid var(--divider-color); font-size:13px; font-weight:800; display:inline-flex; align-items:center; justify-content:center; gap:6px; cursor:pointer; color:var(--primary-text-color); line-height:1; min-height:28px; white-space:nowrap; }
           .mini-pill.on { background:var(--primary-color); color:var(--text-primary-color); border-color:transparent; }
-          .mini-pill.enable-off { color:var(--disabled-text-color); background:var(--secondary-background-color); }
+          .mini-pill.enable-pill { align-self:flex-start; height:28px; padding:0 10px; }
+          .mini-pill.enable-off { color:var(--disabled-text-color); background:var(--secondary-background-color); border-color:var(--divider-color); }
           .top-actions { display:flex; gap:7px; justify-content:flex-end; width:100%; }
           .mini-pill.start { background:rgba(76,175,80,.22); }
           .mini-pill.stop { background:rgba(244,67,54,.20); }
           .mini-pill:disabled { opacity:.38; cursor:not-allowed; }
           .mini-pill ha-icon { --mdc-icon-size:16px; }
-          .times-settings { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-bottom:10px; }
+          .times-settings { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-bottom:10px; align-items:start; }
           .manual-stack { display:flex; flex-direction:column; gap:8px; min-width:0; }
           .times-box { border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
           .times-title { font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
@@ -1140,17 +1288,21 @@ class CarHeaterCard extends HTMLElement {
           button.start { background:rgba(76,175,80,.22); }
           button.stop { background:rgba(244,67,54,.20); }
           button:disabled { opacity:.38; cursor:not-allowed; }
+          button.mini-pill { height:28px; min-height:28px; padding:0 10px; border-radius:999px; font-size:13px; }
           .settings { border-top:1px solid var(--divider-color); padding-top:12px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
-          .time-set { justify-content:space-between; padding:10px; border:1px solid var(--divider-color); min-height:54px; }
+          .time-set { justify-content:space-between; padding:10px; border:1px solid var(--divider-color); height:54px; min-height:54px; }
           .time-set span { color:var(--secondary-text-color); font-size:12px; }
           .time-set strong { font-size:18px; }
-          .slide-toggle { position:relative; height:36px; border-radius:999px; border:1px solid var(--divider-color); background:var(--secondary-background-color); color:var(--disabled-text-color); overflow:hidden; touch-action:none; user-select:none; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; letter-spacing:.01em; }
+          .slide-toggle { position:relative; height:44px; border-radius:999px; border:1px solid var(--divider-color); background:var(--secondary-background-color); color:var(--disabled-text-color); overflow:hidden; touch-action:pan-y; user-select:none; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; letter-spacing:.01em; cursor:grab; }
           .slide-toggle.on { color:var(--text-primary-color); background:rgba(var(--rgb-primary-color, 33,150,243), .35); }
           .slide-toggle.dragging { cursor:grabbing; }
-          .slide-track-text { pointer-events:none; opacity:.9; }
-          .slide-knob { position:absolute; left:4px; top:4px; width:28px; height:28px; border-radius:999px; background:var(--card-background-color); box-shadow:0 2px 8px rgba(0,0,0,.25); transition:transform .18s ease; will-change:transform; }
-          .slide-toggle.on .slide-knob { transform:translateX(calc(100cqw - 36px)); }
-          .slide-toggle { container-type:inline-size; }
+          .slide-track-text { pointer-events:none; opacity:.9; transition:opacity .18s ease; }
+          .slide-toggle.dragging .slide-track-text { opacity:.55; }
+          .slide-knob { position:absolute; left:4px; top:4px; width:36px; height:36px; border-radius:999px; background:var(--card-background-color); box-shadow:0 2px 8px rgba(0,0,0,.25); transition:transform .18s ease; will-change:transform; display:flex; align-items:center; justify-content:center; color:var(--secondary-text-color); }
+          .slide-knob::before { content:'›'; font-size:22px; line-height:1; transform:translateX(1px); }
+          .slide-toggle.on .slide-knob::before { content:'‹'; transform:translateX(-1px); }
+          .slide-toggle.dragging .slide-knob { transition:none; }
+          .slide-toggle .slide-knob { transform:translateX(var(--slide-x, 0px)); }
           .picker-overlay { position:fixed; inset:0; z-index:999; background:rgba(0,0,0,.42); display:flex; align-items:center; justify-content:center; padding:20px; }
           .picker { width:min(360px, 100%); background:var(--card-background-color); color:var(--primary-text-color); border-radius:22px; padding:18px; box-shadow:0 12px 36px rgba(0,0,0,.35); }
           .picker-title { font-size:20px; font-weight:800; text-align:center; margin-bottom:12px; }
@@ -1175,7 +1327,7 @@ class CarHeaterCard extends HTMLElement {
           <div class="head">
             <div class="head-left">
               <div class="title"><ha-icon icon="mdi:car-clock"></ha-icon>${title}</div>
-              <div class="mini-pill ${enabled === 'on' ? 'on' : 'enable-off'}" data-action="toggle" data-entity="${e.enable_switch || ''}"><ha-icon icon="mdi:power"></ha-icon>${enabled === 'on' ? this.t('enabled_active') : this.t('enabled_inactive')}</div>
+              <div class="mini-pill enable-pill ${enabled === 'on' ? 'on' : 'enable-off'}" data-action="toggle" data-entity="${e.enable_switch || ''}"><ha-icon icon="mdi:power"></ha-icon>${enabled === 'on' ? this.t('enabled_active') : this.t('enabled_inactive')}</div>
             </div>
             <div class="head-right">
               <div class="state-pill ${heaterOn ? 'on' : 'off'}">${status}<ha-icon icon="mdi:car-seat-heater"></ha-icon></div>
@@ -1213,6 +1365,7 @@ class CarHeaterCard extends HTMLElement {
         ${this.pickerTemplate()}
       </ha-card>`;
     this.bind();
+    this.bindSlideToggles();
     this.bindPicker();
   }
 }
