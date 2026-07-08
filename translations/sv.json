@@ -50,5 +50,7 @@
   "no_history": "Ingen historik",
   "heat_curve": "Värmekurva",
   "automatic_calculation": "Automatisk beräkning",
-  "manual_calculation": "Manuell beräkning"
+  "manual_calculation": "Manuell beräkning",
+  "enabled_active": "Aktiverad",
+  "enabled_inactive": "Inaktiverad"
 }

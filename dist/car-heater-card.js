@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.5.6';
+const CAR_HEATER_CARD_VERSION = '0.5.8';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 class CarHeaterCard extends HTMLElement {
@@ -263,6 +263,11 @@ class CarHeaterCard extends HTMLElement {
   toggle(entity) {
     if (!entity || !this._hass) return;
     this._hass.callService('switch', 'toggle', { entity_id: entity });
+  }
+
+  setSwitch(entity, on) {
+    if (!entity || !this._hass) return;
+    this._hass.callService('switch', on ? 'turn_on' : 'turn_off', { entity_id: entity });
   }
 
   press(entity) {
@@ -1034,11 +1039,23 @@ class CarHeaterCard extends HTMLElement {
       <ha-card>
         <style>
           .wrap { padding: 14px; }
-          .head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
+          .head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px; }
+          .head-left { display:flex; flex-direction:column; gap:7px; min-width:0; }
           .title { font-size:20px; font-weight:700; display:flex; align-items:center; gap:8px; }
+          .head-right { display:flex; flex-direction:column; align-items:flex-end; gap:7px; justify-content:flex-start; }
           .state-pill { padding:6px 10px; border-radius:999px; background:var(--secondary-background-color); font-size:13px; font-weight:700; text-transform:none; display:flex; align-items:center; gap:6px; }
           .state-pill ha-icon { --mdc-icon-size:18px; color:var(--disabled-text-color); }
           .state-pill.on ha-icon { color:#ffeb3b; filter:drop-shadow(0 0 4px rgba(255,235,59,.45)); }
+          .mini-pill { padding:5px 10px; border-radius:999px; background:var(--secondary-background-color); border:1px solid var(--divider-color); font-size:13px; font-weight:800; display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:var(--primary-text-color); line-height:1; min-height:28px; }
+          .mini-pill.on { background:var(--primary-color); color:var(--text-primary-color); border-color:transparent; }
+          .mini-pill.enable-off { color:var(--disabled-text-color); background:var(--secondary-background-color); }
+          .top-actions { display:flex; gap:7px; justify-content:flex-end; width:100%; }
+          .mini-pill.start { background:rgba(76,175,80,.22); }
+          .mini-pill.stop { background:rgba(244,67,54,.20); }
+          .mini-pill:disabled { opacity:.38; cursor:not-allowed; }
+          .mini-pill ha-icon { --mdc-icon-size:16px; }
+          .times-settings { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-bottom:10px; }
+          .manual-stack { display:flex; flex-direction:column; gap:8px; min-width:0; }
           .times-box { border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
           .times-title { font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
           .times { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
@@ -1124,9 +1141,16 @@ class CarHeaterCard extends HTMLElement {
           button.stop { background:rgba(244,67,54,.20); }
           button:disabled { opacity:.38; cursor:not-allowed; }
           .settings { border-top:1px solid var(--divider-color); padding-top:12px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
-          .time-set { justify-content:space-between; padding:10px; border:1px solid var(--divider-color); }
+          .time-set { justify-content:space-between; padding:10px; border:1px solid var(--divider-color); min-height:54px; }
           .time-set span { color:var(--secondary-text-color); font-size:12px; }
           .time-set strong { font-size:18px; }
+          .slide-toggle { position:relative; height:36px; border-radius:999px; border:1px solid var(--divider-color); background:var(--secondary-background-color); color:var(--disabled-text-color); overflow:hidden; touch-action:none; user-select:none; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; letter-spacing:.01em; }
+          .slide-toggle.on { color:var(--text-primary-color); background:rgba(var(--rgb-primary-color, 33,150,243), .35); }
+          .slide-toggle.dragging { cursor:grabbing; }
+          .slide-track-text { pointer-events:none; opacity:.9; }
+          .slide-knob { position:absolute; left:4px; top:4px; width:28px; height:28px; border-radius:999px; background:var(--card-background-color); box-shadow:0 2px 8px rgba(0,0,0,.25); transition:transform .18s ease; will-change:transform; }
+          .slide-toggle.on .slide-knob { transform:translateX(calc(100cqw - 36px)); }
+          .slide-toggle { container-type:inline-size; }
           .picker-overlay { position:fixed; inset:0; z-index:999; background:rgba(0,0,0,.42); display:flex; align-items:center; justify-content:center; padding:20px; }
           .picker { width:min(360px, 100%); background:var(--card-background-color); color:var(--primary-text-color); border-radius:22px; padding:18px; box-shadow:0 12px 36px rgba(0,0,0,.35); }
           .picker-title { font-size:20px; font-weight:800; text-align:center; margin-bottom:12px; }
@@ -1138,7 +1162,10 @@ class CarHeaterCard extends HTMLElement {
           .picker-actions { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-top:14px; }
           .picker-save { background:var(--primary-color); color:var(--text-primary-color); }
           @media (max-width:700px) {
+            .head { flex-direction:column; }
+            .head-right { justify-content:flex-start; }
             .times { grid-template-columns:repeat(2,minmax(0,1fr)); }
+            .times-settings { grid-template-columns:1fr; }
             .main { grid-template-columns:1fr; }
             .heater-symbol { min-height:80px; }
             .settings { grid-template-columns:1fr; }
@@ -1146,12 +1173,31 @@ class CarHeaterCard extends HTMLElement {
         </style>
         <div class="wrap">
           <div class="head">
-            <div class="title"><ha-icon icon="mdi:car-clock"></ha-icon>${title}</div>
-            <div class="state-pill ${heaterOn ? 'on' : 'off'}">${status}<ha-icon icon="mdi:car-seat-heater"></ha-icon></div>
+            <div class="head-left">
+              <div class="title"><ha-icon icon="mdi:car-clock"></ha-icon>${title}</div>
+              <div class="mini-pill ${enabled === 'on' ? 'on' : 'enable-off'}" data-action="toggle" data-entity="${e.enable_switch || ''}"><ha-icon icon="mdi:power"></ha-icon>${enabled === 'on' ? this.t('enabled_active') : this.t('enabled_inactive')}</div>
+            </div>
+            <div class="head-right">
+              <div class="state-pill ${heaterOn ? 'on' : 'off'}">${status}<ha-icon icon="mdi:car-seat-heater"></ha-icon></div>
+              <div class="top-actions">
+                <button class="mini-pill start" ${startDisabled ? 'disabled' : ''} data-action="press" data-entity="${e.start_now_button || ''}"><ha-icon icon="mdi:play"></ha-icon>${this.t('start_now')}</button>
+                <button class="mini-pill stop" ${stopDisabled ? 'disabled' : ''} data-action="press" data-entity="${e.stop_button || ''}"><ha-icon icon="mdi:stop"></ha-icon>${this.t('stop_now')}</button>
+              </div>
+            </div>
           </div>
 
           <div class="times-box">
             <div class="times-title"><ha-icon icon="mdi:clock-outline"></ha-icon>${this.t('times')}</div>
+            ${showSettings ? `<div class="times-settings">
+              <div class="manual-stack">
+                ${this.timeSetting(e.manual_departure_time, this.t('manual_departure'))}
+                <div class="slide-toggle ${once === 'on' ? 'on' : ''}" data-entity="${e.one_time_switch || ''}" data-state="${once === 'on' ? 'on' : 'off'}">
+                  <span class="slide-track-text">${this.t('one_time')} · ${once === 'on' ? this.t('state.on') : this.t('state.off')}</span>
+                  <span class="slide-knob"></span>
+                </div>
+              </div>
+              ${this.timeSetting(e.workday_departure_time, this.t('workday_departure'))}
+            </div>` : ''}
             <div class="times">
               <div class="time" data-action="more" data-entity="${e.departure_time || ''}"><div class="label">${this.t('departure')}</div><div class="value">${this.state(e.departure_time)}</div></div>
               <div class="time" data-action="more" data-entity="${e.start_time || ''}"><div class="label">${this.t('start')}</div><div class="value">${this.state(e.start_time)}</div></div>
@@ -1163,20 +1209,6 @@ class CarHeaterCard extends HTMLElement {
           ${this.chartTemplate()}
           ${this.heatCurveTemplate()}
 
-          <div class="chips">
-            <div class="chip ${enabled === 'on' ? 'on' : ''}" data-action="toggle" data-entity="${e.enable_switch || ''}" >${this.t('enable')}<span class="sub">${enabled === 'on' ? this.t('state.on') : this.t('state.off')}</span></div>
-            <div class="chip ${once === 'on' ? 'on' : ''}" data-action="toggle" data-entity="${e.one_time_switch || ''}" >${this.t('one_time')}<span class="sub">${once === 'on' ? this.t('state.on') : this.t('state.off')}</span></div>
-          </div>
-
-          <div class="actions">
-            <button class="start" ${startDisabled ? 'disabled' : ''} data-action="press" data-entity="${e.start_now_button || ''}"><ha-icon icon="mdi:play"></ha-icon>${this.t('start_now')}</button>
-            <button class="stop" ${stopDisabled ? 'disabled' : ''} data-action="press" data-entity="${e.stop_button || ''}"><ha-icon icon="mdi:stop"></ha-icon>${this.t('stop_now')}</button>
-          </div>
-
-          ${showSettings ? `<div class="settings">
-            ${this.timeSetting(e.manual_departure_time, this.t('manual_departure'))}
-            ${this.timeSetting(e.workday_departure_time, this.t('workday_departure'))}
-          </div>` : ''}
         </div>
         ${this.pickerTemplate()}
       </ha-card>`;

@@ -50,5 +50,7 @@
   "no_history": "No history",
   "heat_curve": "Heating curve",
   "automatic_calculation": "Automatic calculation",
-  "manual_calculation": "Manual calculation"
+  "manual_calculation": "Manual calculation",
+  "enabled_active": "Enabled",
+  "enabled_inactive": "Disabled"
 }
