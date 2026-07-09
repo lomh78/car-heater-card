@@ -1,7 +1,294 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.5.12';
+const CAR_HEATER_CARD_VERSION = '0.6.1';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
+
+
+class CarHeaterSlideSwitch extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this._checked = false;
+    this._dragging = false;
+    this._horizontal = false;
+    this._pointerId = null;
+    this._startX = 0;
+    this._startY = 0;
+    this._startPos = 0;
+    this._pos = 0;
+    this._pending = false;
+    this._pendingTimer = null;
+    this._syncFrame = null;
+  }
+
+  static get observedAttributes() {
+    return ['checked', 'label', 'on-text', 'off-text', 'disabled'];
+  }
+
+  connectedCallback() {
+    this.render();
+    this.syncFromAttribute(false);
+    this.scheduleSync(false);
+  }
+
+  disconnectedCallback() {
+    if (this._pendingTimer) window.clearTimeout(this._pendingTimer);
+    if (this._syncFrame) window.cancelAnimationFrame(this._syncFrame);
+  }
+
+  attributeChangedCallback() {
+    if (!this.isConnected) return;
+    if (this._pending) {
+      this.confirmIfMatches();
+      this.updateText();
+      return;
+    }
+    if (this._dragging) {
+      this.updateText();
+      return;
+    }
+    this.syncFromAttribute(true);
+    this.scheduleSync(true);
+    this.updateText();
+  }
+
+  get busy() {
+    return this._dragging || this._pending;
+  }
+
+  get disabled() {
+    return this.hasAttribute('disabled');
+  }
+
+  get checked() {
+    return this._checked;
+  }
+
+  set checked(value) {
+    this._checked = !!value;
+    this.setVisual(this._checked ? this.maxPos() : 0, true);
+    this.updateText();
+  }
+
+  syncFromAttribute(animate = true) {
+    this._checked = this.hasAttribute('checked');
+    this.setVisual(this._checked ? this.maxPos() : 0, animate);
+    this.updateText();
+  }
+
+  scheduleSync(animate = true) {
+    if (this._syncFrame) window.cancelAnimationFrame(this._syncFrame);
+    this._syncFrame = window.requestAnimationFrame(() => {
+      this._syncFrame = window.requestAnimationFrame(() => {
+        this._syncFrame = null;
+        if (!this.isConnected || this._dragging) return;
+        this.syncFromAttribute(animate);
+      });
+    });
+  }
+
+  maxPos() {
+    const track = this.shadowRoot?.querySelector('.track');
+    if (!track) return 0;
+    const width = track.getBoundingClientRect().width || this.getBoundingClientRect().width || track.offsetWidth || this.offsetWidth || 0;
+    return Math.max(0, width - 46);
+  }
+
+  clamp(value) {
+    return Math.max(0, Math.min(this.maxPos(), value));
+  }
+
+  setVisual(value, animate = false) {
+    this._pos = this.clamp(value);
+    const root = this.shadowRoot?.host;
+    if (root) root.style.setProperty('--slide-x', `${this._pos}px`);
+    const track = this.shadowRoot?.querySelector('.track');
+    if (track) {
+      track.dataset.checked = this._checked ? 'on' : 'off';
+      track.classList.toggle('on', this._checked);
+      track.classList.toggle('dragging', this._dragging);
+      track.classList.toggle('pending', this._pending);
+      track.classList.toggle('animate', !!animate && !this._dragging);
+    }
+  }
+
+  updateText() {
+    const label = this.getAttribute('label') || '';
+    const onText = this.getAttribute('on-text') || 'On';
+    const offText = this.getAttribute('off-text') || 'Off';
+    const state = this._pending ? '…' : (this._checked ? onText : offText);
+    const text = this.shadowRoot?.querySelector('.text');
+    if (text) text.textContent = label ? `${label} · ${state}` : state;
+  }
+
+  beginPending(target) {
+    this._pending = true;
+    this._checked = target;
+    this.setVisual(target ? this.maxPos() : 0, true);
+    this.updateText();
+    if (this._pendingTimer) window.clearTimeout(this._pendingTimer);
+    this._pendingTimer = window.setTimeout(() => {
+      this._pending = false;
+      this.syncFromAttribute(true);
+    }, 5000);
+  }
+
+  confirmIfMatches() {
+    const attrChecked = this.hasAttribute('checked');
+    if (this._pending && attrChecked === this._checked) {
+      this._pending = false;
+      if (this._pendingTimer) window.clearTimeout(this._pendingTimer);
+      this._pendingTimer = null;
+      this.syncFromAttribute(true);
+      this.scheduleSync(true);
+    }
+  }
+
+  finish(ev) {
+    if (!this._dragging || (this._pointerId !== null && ev?.pointerId !== this._pointerId)) return;
+    const wasHorizontal = this._horizontal;
+    if (wasHorizontal) {
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+    }
+    try { this.shadowRoot.querySelector('.track')?.releasePointerCapture?.(this._pointerId); } catch (_) { /* ignore */ }
+    this._dragging = false;
+    this._horizontal = false;
+    this._pointerId = null;
+
+    if (!wasHorizontal) {
+      this.setVisual(this._checked ? this.maxPos() : 0, true);
+      return;
+    }
+
+    const target = this._pos >= this.maxPos() * 0.50;
+    if (target === this._checked) {
+      this.setVisual(this._checked ? this.maxPos() : 0, true);
+      return;
+    }
+    this.beginPending(target);
+    this.dispatchEvent(new CustomEvent('slide-switch-change', {
+      detail: { checked: target },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display:block; width:100%; --slide-x:0px; }
+        .track {
+          position:relative;
+          height:38px;
+          min-height:38px;
+          border-radius:999px;
+          border:1px solid var(--divider-color);
+          background:var(--secondary-background-color);
+          color:var(--disabled-text-color);
+          overflow:hidden;
+          user-select:none;
+          touch-action:pan-y;
+          cursor:grab;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          font-size:12px;
+          font-weight:800;
+          letter-spacing:.01em;
+        }
+        .track.on {
+          background:rgba(var(--rgb-primary-color, 33,150,243), .34);
+          color:var(--primary-text-color);
+        }
+        .track.dragging { cursor:grabbing; }
+        .track.pending { opacity:.86; }
+        .text { pointer-events:none; opacity:.9; transition:opacity .16s ease; }
+        .track.dragging .text { opacity:.58; }
+        .knob-hit {
+          position:absolute;
+          left:-6px;
+          top:-8px;
+          width:60px;
+          height:54px;
+          transform:translateX(var(--slide-x));
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          transition:transform .2s cubic-bezier(.2,.8,.2,1);
+          will-change:transform;
+          pointer-events:none;
+        }
+        .knob {
+          width:34px;
+          height:34px;
+          border-radius:999px;
+          background:var(--card-background-color);
+          box-shadow:0 2px 10px rgba(0,0,0,.28);
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          color:var(--secondary-text-color);
+        }
+        .knob::before { content:'›'; font-size:22px; line-height:1; transform:translateX(1px); }
+        .track.on .knob::before { content:'‹'; transform:translateX(-1px); }
+        .track.dragging .knob-hit { transition:none; }
+      </style>
+      <div class="track" part="track">
+        <span class="text"></span>
+        <span class="knob-hit"><span class="knob"></span></span>
+      </div>`;
+
+    const track = this.shadowRoot.querySelector('.track');
+    track.addEventListener('pointerdown', (ev) => {
+      if (this.disabled || this._pending) return;
+      if (ev.button !== undefined && ev.button !== 0) return;
+      this._dragging = true;
+      this._horizontal = false;
+      this._pointerId = ev.pointerId;
+      this._startX = ev.clientX;
+      this._startY = ev.clientY;
+      this._startPos = this._checked ? this.maxPos() : 0;
+      this.setVisual(this._startPos, false);
+      if (ev.pointerType === 'mouse') {
+        this._horizontal = true;
+        try { track.setPointerCapture?.(ev.pointerId); } catch (_) { /* ignore */ }
+        ev.preventDefault();
+      }
+    });
+
+    track.addEventListener('pointermove', (ev) => {
+      if (!this._dragging || ev.pointerId !== this._pointerId) return;
+      const dx = ev.clientX - this._startX;
+      const dy = ev.clientY - this._startY;
+      if (!this._horizontal) {
+        if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+          this._horizontal = true;
+          try { track.setPointerCapture?.(ev.pointerId); } catch (_) { /* ignore */ }
+        } else if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
+          this._dragging = false;
+          this._pointerId = null;
+          this.setVisual(this._checked ? this.maxPos() : 0, true);
+          return;
+        } else {
+          return;
+        }
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.setVisual(this._startPos + dx, false);
+    });
+
+    track.addEventListener('pointerup', (ev) => this.finish(ev));
+    track.addEventListener('pointercancel', (ev) => this.finish(ev));
+    window.addEventListener('resize', () => this.syncFromAttribute(false));
+    this.syncFromAttribute(false);
+  }
+}
+
+if (!customElements.get('car-heater-slide-switch')) {
+  customElements.define('car-heater-slide-switch', CarHeaterSlideSwitch);
+}
 
 class CarHeaterCard extends HTMLElement {
   constructor() {
@@ -88,7 +375,8 @@ class CarHeaterCard extends HTMLElement {
     // Home Assistant pushes frequent state updates, and a re-render would reset
     // in-progress UI interactions back to the stored entity value.
     if (this._timePicker && this.shadowRoot.querySelector('.picker-overlay')) return;
-    if (this._activeSlideDrag) return;
+    const slide = this.shadowRoot?.querySelector('car-heater-slide-switch');
+    if (slide?.busy) return;
     this.render();
   }
 
@@ -341,6 +629,17 @@ class CarHeaterCard extends HTMLElement {
   }
 
   bindSlideToggles() {
+    this.shadowRoot.querySelectorAll('car-heater-slide-switch').forEach((slider) => {
+      const entity = slider.dataset.entity;
+      if (!entity || slider._carHeaterBound) return;
+      slider._carHeaterBound = true;
+      slider.addEventListener('slide-switch-change', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.setSwitch(entity, !!ev.detail.checked);
+      });
+    });
+    return;
     this.shadowRoot.querySelectorAll('.slide-toggle').forEach((slider) => {
       const entity = slider.dataset.entity;
       if (!entity) return;
@@ -1343,10 +1642,14 @@ class CarHeaterCard extends HTMLElement {
             ${showSettings ? `<div class="times-settings">
               <div class="manual-stack">
                 ${this.timeSetting(e.manual_departure_time, this.t('manual_departure'))}
-                <div class="slide-toggle ${once === 'on' ? 'on' : ''}" data-entity="${e.one_time_switch || ''}" data-state="${once === 'on' ? 'on' : 'off'}">
-                  <span class="slide-track-text">${this.t('one_time')} · ${once === 'on' ? this.t('state.on') : this.t('state.off')}</span>
-                  <span class="slide-knob"></span>
-                </div>
+                <car-heater-slide-switch
+                  data-entity="${e.one_time_switch || ''}"
+                  label="${this.t('one_time')}"
+                  on-text="${this.t('state.on')}"
+                  off-text="${this.t('state.off')}"
+                  ${once === 'on' ? 'checked' : ''}
+                  ${this.isUnavailable(e.one_time_switch) ? 'disabled' : ''}
+                ></car-heater-slide-switch>
               </div>
               ${this.timeSetting(e.workday_departure_time, this.t('workday_departure'))}
             </div>` : ''}
