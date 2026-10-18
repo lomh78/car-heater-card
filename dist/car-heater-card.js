@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.6.4';
+const CAR_HEATER_CARD_VERSION = '0.6.4-layout2';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 
@@ -1538,10 +1538,11 @@ class CarHeaterCard extends HTMLElement {
       <ha-card>
         <style>
           .wrap { padding: 14px; }
-          .head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px; }
-          .head-left { display:flex; flex-direction:column; gap:7px; min-width:0; }
-          .title { font-size:20px; font-weight:700; display:flex; align-items:center; gap:8px; }
-          .head-right { display:flex; flex-direction:column; align-items:flex-end; gap:7px; justify-content:flex-start; }
+          .head { display:grid; grid-template-columns:minmax(0,1fr) max-content; align-items:start; column-gap:8px; margin-bottom:12px; min-width:0; width:100%; }
+          .head-left { display:flex; flex:1 1 auto; flex-direction:column; gap:7px; min-width:0; }
+          .title { font-size:20px; font-weight:700; display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .title ha-icon { flex-shrink:0; }
+          .head-right { display:flex; flex-direction:column; align-items:flex-end; gap:7px; justify-content:flex-start; width:max-content; min-width:0; justify-self:end; }
           .state-pill { padding:6px 10px; border-radius:999px; background:var(--secondary-background-color); font-size:13px; font-weight:700; text-transform:none; display:flex; align-items:center; gap:6px; }
           .state-pill ha-icon { --mdc-icon-size:18px; color:var(--disabled-text-color); }
           .state-pill.on ha-icon { color:#ffeb3b; filter:drop-shadow(0 0 4px rgba(255,235,59,.45)); }
@@ -1549,7 +1550,7 @@ class CarHeaterCard extends HTMLElement {
           .mini-pill.on { background:var(--primary-color); color:var(--text-primary-color); border-color:transparent; }
           .mini-pill.enable-pill { align-self:flex-start; height:28px; padding:0 10px; }
           .mini-pill.enable-off { color:var(--disabled-text-color); background:var(--secondary-background-color); border-color:var(--divider-color); }
-          .top-actions { display:flex; gap:7px; justify-content:flex-end; width:100%; }
+          .top-actions { display:flex; flex-wrap:nowrap; gap:7px; justify-content:flex-end; width:100%; }
           .mini-pill.start { background:rgba(76,175,80,.22); }
           .mini-pill.stop { background:rgba(244,67,54,.20); }
           .mini-pill:disabled { opacity:.38; cursor:not-allowed; }
@@ -1666,8 +1667,16 @@ class CarHeaterCard extends HTMLElement {
           .picker-actions { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-top:14px; }
           .picker-save { background:var(--primary-color); color:var(--text-primary-color); }
           @media (max-width:700px) {
-            .head { flex-direction:column; }
+            .head { grid-template-columns:minmax(0,1fr) max-content; column-gap:4px; }
             .head-right { justify-content:flex-start; }
+            .title { font-size:clamp(12px, 4vw, 20px); gap:4px; }
+            .title ha-icon { --mdc-icon-size:20px; }
+            .top-actions { gap:4px; }
+            .head-right .mini-pill { padding:0 5px; font-size:11px; gap:3px; }
+            .head-right .mini-pill ha-icon { --mdc-icon-size:14px; }
+            .state-pill { font-size:11px; padding:5px 7px; gap:3px; }
+            .state-pill ha-icon { --mdc-icon-size:15px; }
+            .enable-pill { max-width:100%; font-size:11px; padding:0 6px; overflow:hidden; }
             .times { grid-template-columns:repeat(2,minmax(0,1fr)); }
             .times-settings { grid-template-columns:1fr; }
             .main { grid-template-columns:1fr; }
