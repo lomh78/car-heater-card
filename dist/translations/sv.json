@@ -52,5 +52,7 @@
   "automatic_calculation": "Automatisk beräkning",
   "manual_calculation": "Manuell beräkning",
   "enabled_active": "Aktiverad",
-  "enabled_inactive": "Inaktiverad"
+  "enabled_inactive": "Inaktiverad",
+  "one_time_date": "Datum för engångstid",
+  "date": "Datum"
 }

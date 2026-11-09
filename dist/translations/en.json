@@ -52,5 +52,7 @@
   "automatic_calculation": "Automatic calculation",
   "manual_calculation": "Manual calculation",
   "enabled_active": "Enabled",
-  "enabled_inactive": "Disabled"
+  "enabled_inactive": "Disabled",
+  "one_time_date": "One-time departure date",
+  "date": "Date"
 }
