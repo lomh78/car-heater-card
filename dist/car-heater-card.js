@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.6.5-beta3';
+const CAR_HEATER_CARD_VERSION = '0.6.5-beta4';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 
@@ -1366,8 +1366,8 @@ class CarHeaterCard extends HTMLElement {
 
     const { ranges, departures } = this.scheduledRanges(graphStart, graphEnd);
     const actualRanges = showPlan ? this.actualRuntimeRanges(graphStart, now) : [];
-    const bandHeight = 16;
-    const runtimeBandY = lanes.runtime.top + 10;
+    const bandHeight = 24;
+    const runtimeBandY = lanes.runtime.top + 6;
 
     const bandRect = (cls, r, yPos) => {
       const x1 = Math.max(pad.left, x(r.start.getTime()));
@@ -1380,17 +1380,16 @@ class CarHeaterCard extends HTMLElement {
     const actualSvg = showPlan ? actualRanges.map((r) => bandRect(isCurrentRange(r) ? 'current-band' : 'actual-band', r, runtimeBandY)).join('') : '';
     const planSvg = showPlan ? ranges.map((r) => bandRect('planned-band', r, runtimeBandY)).join('') : '';
 
-    const marker = (cls, date, label) => {
+    const marker = (cls, date) => {
       if (!date || date < graphStart || date > graphEnd) return '';
       const xx = x(date.getTime()).toFixed(1);
       const y1 = lanes.runtime.top + 2;
       const y2 = lanes.runtime.bottom - 3;
-      const labelY = lanes.runtime.top - 5;
-      return `<line class="${cls}" x1="${xx}" x2="${xx}" y1="${y1}" y2="${y2}"></line><text class="axis-label marker-label" x="${xx}" y="${labelY}" text-anchor="middle">${label}</text>`;
+      return `<line class="${cls}" x1="${xx}" x2="${xx}" y1="${y1}" y2="${y2}"></line>`;
     };
 
-    const plannedMarkers = showPlan ? ranges.map((r) => `${marker('start-line', r.start, this.t('start'))}${marker('stop-line', r.stop, this.t('stop'))}`).join('') : '';
-    const depSvg = showPlan ? departures.map((d) => marker('departure-line', d, this.t('departure'))).join('') : '';
+    const plannedMarkers = showPlan ? ranges.map((r) => `${marker('start-line', r.start)}${marker('stop-line', r.stop)}`).join('') : '';
+    const depSvg = showPlan ? departures.map((d) => marker('departure-line', d)).join('') : '';
     const nowSvg = `<line class="now-line" x1="${nowX.toFixed(1)}" x2="${nowX.toFixed(1)}" y1="${pad.top}" y2="${height - pad.bottom}"></line>`;
 
     const axisY = height - 8;
@@ -1723,7 +1722,6 @@ class CarHeaterCard extends HTMLElement {
           .timeline-axis span { position:absolute; top:0; transform:translateX(-50%); white-space:nowrap; }
           .timeline-axis span:nth-child(1) { transform:translateX(0); }
           .timeline-axis span:last-child { transform:translateX(-100%); }
-          .marker-label { font-size:9px; opacity:.85; }
           .graph-legend { display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; color:var(--secondary-text-color); font-size:12px; }
           .graph-legend span { display:flex; align-items:center; gap:5px; }
           .dot { width:9px; height:9px; border-radius:999px; display:inline-block; }
