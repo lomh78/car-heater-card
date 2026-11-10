@@ -9,11 +9,11 @@
   "temperature_source": "Temperaturkälla",
   "power": "Förbrukning",
   "enable": "Aktivera",
-  "one_time": "Engångstid",
+  "one_time": "Manuell tid",
   "start_now": "Starta nu",
   "stop_now": "Stoppa",
-  "manual_departure": "Manuell avresa",
-  "workday_departure": "Arbetsdag avresa",
+  "manual_departure": "Manuell tid",
+  "workday_departure": "Tid arbetsdagar",
   "time": "Tid",
   "hour": "Timme",
   "minute": "Minut",
@@ -26,7 +26,7 @@
   "status": {
     "waiting": "Väntar",
     "scheduled": "Schemalagd",
-    "running": "Kör",
+    "running": "Värmer",
     "manual": "Manuell",
     "start_now": "Startad nu",
     "no_temperature": "Ingen temperatur",
@@ -53,6 +53,6 @@
   "manual_calculation": "Manuell beräkning",
   "enabled_active": "Aktiverad",
   "enabled_inactive": "Inaktiverad",
-  "one_time_date": "Datum för engångstid",
+  "one_time_date": "Manuell tid",
   "date": "Datum"
 }

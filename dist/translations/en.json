@@ -9,11 +9,11 @@
   "temperature_source": "Temperature source",
   "power": "Power",
   "enable": "Enable",
-  "one_time": "One-time",
+  "one_time": "Manual time",
   "start_now": "Start now",
   "stop_now": "Stop",
-  "manual_departure": "Manual departure",
-  "workday_departure": "Workday departure",
+  "manual_departure": "Manual time",
+  "workday_departure": "Workday time",
   "time": "Time",
   "hour": "Hour",
   "minute": "Minute",
@@ -26,7 +26,7 @@
   "status": {
     "waiting": "Waiting",
     "scheduled": "Scheduled",
-    "running": "Running",
+    "running": "Heating",
     "manual": "Manual",
     "start_now": "Started now",
     "no_temperature": "No temperature",
@@ -53,6 +53,6 @@
   "manual_calculation": "Manual calculation",
   "enabled_active": "Enabled",
   "enabled_inactive": "Disabled",
-  "one_time_date": "One-time departure date",
+  "one_time_date": "Manual time",
   "date": "Date"
 }
