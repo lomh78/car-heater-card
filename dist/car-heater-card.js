@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.6.5-beta4';
+const CAR_HEATER_CARD_VERSION = '0.6.5-beta5';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 
@@ -1690,7 +1690,7 @@ class CarHeaterCard extends HTMLElement {
           .times { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
           .time { border-radius:13px; background:var(--card-background-color); padding:10px; cursor:pointer; min-width:0; text-align:center; }
           .label { font-size:12px; color:var(--secondary-text-color); margin-bottom:4px; white-space:nowrap; }
-          .value { font-size:18px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .value { font-size:18px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-height:42px; display:flex; align-items:flex-end; justify-content:center; line-height:1.25; }
 
           .graph-box { width:100%; box-sizing:border-box; border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
           .graph-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
