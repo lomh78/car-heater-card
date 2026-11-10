@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.6.5-beta2';
+const CAR_HEATER_CARD_VERSION = '0.6.5-beta3';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 
@@ -1684,19 +1684,19 @@ class CarHeaterCard extends HTMLElement {
           .manual-stack { display:flex; flex-direction:column; gap:8px; min-width:0; }
           .times-box { border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
           .date-input { box-sizing:border-box; width:100%; min-height:44px; padding:10px; border:1px solid var(--divider-color); border-radius:12px; background:var(--secondary-background-color); color:var(--primary-text-color); font:inherit; color-scheme:normal; }
-          .datetime-value { display:flex; flex-direction:column; gap:2px; line-height:1.25; }
+          .datetime-value { display:flex; flex-direction:column; align-items:center; gap:2px; line-height:1.25; }
           .date-part { font-size:12px; font-weight:600; color:var(--secondary-text-color); }
           .clock-part { font-size:18px; font-weight:800; }
           .times-title { font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
           .times { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
-          .time { border-radius:13px; background:var(--card-background-color); padding:10px; cursor:pointer; min-width:0; }
+          .time { border-radius:13px; background:var(--card-background-color); padding:10px; cursor:pointer; min-width:0; text-align:center; }
           .label { font-size:12px; color:var(--secondary-text-color); margin-bottom:4px; white-space:nowrap; }
           .value { font-size:18px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-          .graph-box { max-width:1100px; box-sizing:border-box; margin-left:auto; margin-right:auto; border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
+          .graph-box { width:100%; box-sizing:border-box; border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
           .graph-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
           .graph-head span { color:var(--secondary-text-color); font-size:12px; }
-          .history-graph { width:100%; height:214px; border-radius:14px 14px 6px 6px; background:var(--card-background-color); overflow:visible; display:block; }
+          .history-graph { max-width:850px; margin-left:auto; margin-right:auto; width:100%; height:214px; border-radius:14px 14px 6px 6px; background:var(--card-background-color); overflow:visible; display:block; }
           .graph-bg { fill:var(--card-background-color); }
           .lane-grid { stroke:var(--divider-color); stroke-width:1; opacity:.75; vector-effect:non-scaling-stroke; }
           .lane-label { fill:var(--secondary-text-color); font-size:11px; font-weight:700; dominant-baseline:middle; }
