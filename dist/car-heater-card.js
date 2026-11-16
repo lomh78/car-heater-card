@@ -1,6 +1,6 @@
 const DEFAULT_LANGUAGE = 'en';
 
-const CAR_HEATER_CARD_VERSION = '0.6.4-layout2';
+const CAR_HEATER_CARD_VERSION = '0.6.5';
 console.info(`Car Heater Card ${CAR_HEATER_CARD_VERSION}`);
 
 
@@ -301,6 +301,7 @@ class CarHeaterCard extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._timePicker = null;
+    this._datePicker = null;
     this._translations = {};
     this._loadedLanguages = new Set();
     this._loadingLanguages = new Set();
@@ -380,7 +381,7 @@ class CarHeaterCard extends HTMLElement {
     // Do not re-render while the time picker or slide control is active.
     // Home Assistant pushes frequent state updates, and a re-render would reset
     // in-progress UI interactions back to the stored entity value.
-    if (this._timePicker && this.shadowRoot.querySelector('.picker-overlay')) return;
+    if ((this._timePicker || this._datePicker || this._departurePicker) && this.shadowRoot.querySelector('.picker-overlay')) return;
     const slide = this.shadowRoot?.querySelector('car-heater-slide-switch');
     if (slide?.busy) return;
     const signature = this.renderSignature();
@@ -403,7 +404,7 @@ class CarHeaterCard extends HTMLElement {
     };
     const keys = [
       'status_sensor','departure_time','start_time','stop_time','running_time',
-      'manual_departure_time','workday_departure_time','enable_switch','one_time_switch',
+      'manual_departure_time','manual_departure_date','workday_departure_time','enable_switch','one_time_switch',
       'start_now_button','stop_button','runtime_curve_sensor'
     ];
     return JSON.stringify({
@@ -412,7 +413,7 @@ class CarHeaterCard extends HTMLElement {
       entities,
       states: keys.map((key) => [key, stateFor(entities[key])]),
       heatCurveOpen: this._heatCurveOpen,
-      picker: !!this._timePicker,
+      picker: !!(this._timePicker || this._datePicker || this._departurePicker),
       historyKeys: Object.keys(this._historyCache || {}).sort(),
     });
   }
@@ -535,6 +536,7 @@ class CarHeaterCard extends HTMLElement {
       enable_switch: byKey('enabled'),
       one_time_switch: byKey('manual_active'),
       manual_departure_time: byKey('manual_departure'),
+      manual_departure_date: byKey('manual_date'),
       workday_departure_time: byKey('workday_departure'),
       start_now_button: byKey('start_now'),
       stop_button: byKey('stop_now'),
@@ -651,6 +653,12 @@ class CarHeaterCard extends HTMLElement {
     this._hass.callService('button', 'press', { entity_id: entity });
   }
 
+  setDate(entity, value) {
+    if (!entity || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !this._hass) return;
+    this._hass.callService('date', 'set_value', { entity_id: entity, date: value })
+      .catch((err) => console.warn('car-heater-card: could not set date', err));
+  }
+
   setTime(entity, value) {
     if (!entity || !value || !this._hass) return;
     this._hass.callService('time', 'set_value', { entity_id: entity, time: value });
@@ -676,6 +684,8 @@ class CarHeaterCard extends HTMLElement {
         if (action === 'press') this.press(entity);
         if (action === 'more') this.moreInfo(entity);
         if (action === 'pick-time') this.openTimePicker(entity, el.dataset.label || this.t('time'));
+        if (action === 'pick-date') this.openDatePicker(entity, el.dataset.label || this.t('date'));
+        if (action === 'pick-departure') this.openDeparturePicker(el.dataset.dateEntity, el.dataset.timeEntity, el.dataset.label || this.t('manual_departure'));
       });
     });
   }
@@ -810,6 +820,89 @@ class CarHeaterCard extends HTMLElement {
     </button>`;
   }
 
+  dateSetting(entity, label) {
+    if (!entity || !this.obj(entity)) return '';
+    const raw = this.state(entity, '');
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : '';
+    return `<button class="time-set" data-action="pick-date" data-entity="${entity}" data-label="${label}">
+      <span>${label}</span><strong>${date || '—'}</strong><ha-icon icon="mdi:calendar-edit"></ha-icon>
+    </button>`;
+  }
+
+  departureSetting(dateEntity, timeEntity, label) {
+    if (!dateEntity || !timeEntity || !this.obj(dateEntity) || !this.obj(timeEntity)) return '';
+    const date = this.state(dateEntity, '');
+    const time = this.state(timeEntity, '00:00').slice(0, 5);
+    return `<button class="time-set departure-set" data-action="pick-departure" data-date-entity="${dateEntity}" data-time-entity="${timeEntity}" data-label="${label}">
+      <span>${label}</span><strong>${/^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '—'} ${time}</strong><ha-icon icon="mdi:calendar-clock"></ha-icon>
+    </button>`;
+  }
+
+  openDeparturePicker(dateEntity, timeEntity, label) {
+    if (!this.obj(dateEntity) || !this.obj(timeEntity)) return;
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    const raw = this.state(dateEntity, '');
+    const [hour='00', minute='00'] = this.state(timeEntity, '00:00').slice(0,5).split(':');
+    this._departurePicker = { dateEntity, timeEntity, label, date: /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : today, hour, minute };
+    this.render();
+  }
+
+  closeDeparturePicker() {
+    this._departurePicker = null;
+    this.render();
+  }
+
+  async saveDeparturePicker() {
+    const picker = this._departurePicker;
+    if (!picker || !this._hass) return;
+    const date = this.shadowRoot.querySelector('#ch-date')?.value || picker.date;
+    const hour = this.shadowRoot.querySelector('#ch-hour')?.value || picker.hour;
+    const minute = this.shadowRoot.querySelector('#ch-minute')?.value || picker.minute;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    // Keep the popup open if a service call fails, so the user can retry.
+    const save = this.shadowRoot.querySelector('.picker-save');
+    if (save) save.disabled = true;
+    try {
+      await this._hass.callService('date', 'set_value', { entity_id: picker.dateEntity, date });
+      await this._hass.callService('time', 'set_value', { entity_id: picker.timeEntity, time: `${hour}:${minute}:00` });
+      this.closeDeparturePicker();
+    } catch (err) {
+      console.warn('car-heater-card: could not save departure', err);
+      if (save) save.disabled = false;
+    }
+  }
+
+  formatScheduleValue(entity) {
+    const raw = this.state(entity);
+    const match = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+    if (!match) return `<span>${raw}</span>`;
+    const [, y, m, d, hh, mm] = match;
+    return `<span class="datetime-value"><span class="date-part">${y}-${m}-${d}</span><span class="clock-part">${hh}:${mm}</span></span>`;
+  }
+
+  openDatePicker(entity, label) {
+    if (!entity || !this.obj(entity)) return;
+    const raw = this.state(entity, '');
+    const today = new Date();
+    const localToday = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    this._datePicker = { entity, label, date: /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : localToday };
+    this.render();
+  }
+
+  closeDatePicker() {
+    this._datePicker = null;
+    this.render();
+  }
+
+  saveDatePicker() {
+    if (!this._datePicker) return;
+    const entity = this._datePicker.entity;
+    const date = this.shadowRoot.querySelector('#ch-date')?.value || this._datePicker.date;
+    this.setDate(entity, date);
+    this.closeDatePicker();
+  }
+
   numberOptions(max, selected) {
     let html = '';
     for (let i = 0; i <= max; i += 1) {
@@ -829,6 +922,7 @@ class CarHeaterCard extends HTMLElement {
 
   closeTimePicker() {
     this._timePicker = null;
+    this._datePicker = null;
     this.render();
   }
 
@@ -843,6 +937,18 @@ class CarHeaterCard extends HTMLElement {
   bindPicker() {
     const overlay = this.shadowRoot.querySelector('.picker-overlay');
     if (!overlay) return;
+    if (this._departurePicker) {
+      overlay.addEventListener('click', (ev) => { if (ev.target === overlay) this.closeDeparturePicker(); });
+      this.shadowRoot.querySelector('.picker-cancel')?.addEventListener('click', () => this.closeDeparturePicker());
+      this.shadowRoot.querySelector('.picker-save')?.addEventListener('click', () => this.saveDeparturePicker());
+      return;
+    }
+    if (this._datePicker) {
+      overlay.addEventListener('click', (ev) => { if (ev.target === overlay) this.closeDatePicker(); });
+      this.shadowRoot.querySelector('.picker-cancel')?.addEventListener('click', () => this.closeDatePicker());
+      this.shadowRoot.querySelector('.picker-save')?.addEventListener('click', () => this.saveDatePicker());
+      return;
+    }
     overlay.addEventListener('click', (ev) => {
       if (ev.target === overlay) this.closeTimePicker();
     });
@@ -1260,8 +1366,8 @@ class CarHeaterCard extends HTMLElement {
 
     const { ranges, departures } = this.scheduledRanges(graphStart, graphEnd);
     const actualRanges = showPlan ? this.actualRuntimeRanges(graphStart, now) : [];
-    const bandHeight = 16;
-    const runtimeBandY = lanes.runtime.top + 10;
+    const bandHeight = 24;
+    const runtimeBandY = lanes.runtime.top + 6;
 
     const bandRect = (cls, r, yPos) => {
       const x1 = Math.max(pad.left, x(r.start.getTime()));
@@ -1274,17 +1380,16 @@ class CarHeaterCard extends HTMLElement {
     const actualSvg = showPlan ? actualRanges.map((r) => bandRect(isCurrentRange(r) ? 'current-band' : 'actual-band', r, runtimeBandY)).join('') : '';
     const planSvg = showPlan ? ranges.map((r) => bandRect('planned-band', r, runtimeBandY)).join('') : '';
 
-    const marker = (cls, date, label) => {
+    const marker = (cls, date) => {
       if (!date || date < graphStart || date > graphEnd) return '';
       const xx = x(date.getTime()).toFixed(1);
       const y1 = lanes.runtime.top + 2;
       const y2 = lanes.runtime.bottom - 3;
-      const labelY = lanes.runtime.top - 5;
-      return `<line class="${cls}" x1="${xx}" x2="${xx}" y1="${y1}" y2="${y2}"></line><text class="axis-label marker-label" x="${xx}" y="${labelY}" text-anchor="middle">${label}</text>`;
+      return `<line class="${cls}" x1="${xx}" x2="${xx}" y1="${y1}" y2="${y2}"></line>`;
     };
 
-    const plannedMarkers = showPlan ? ranges.map((r) => `${marker('start-line', r.start, this.t('start'))}${marker('stop-line', r.stop, this.t('stop'))}`).join('') : '';
-    const depSvg = showPlan ? departures.map((d) => marker('departure-line', d, this.t('departure'))).join('') : '';
+    const plannedMarkers = showPlan ? ranges.map((r) => `${marker('start-line', r.start)}${marker('stop-line', r.stop)}`).join('') : '';
+    const depSvg = showPlan ? departures.map((d) => marker('departure-line', d)).join('') : '';
     const nowSvg = `<line class="now-line" x1="${nowX.toFixed(1)}" x2="${nowX.toFixed(1)}" y1="${pad.top}" y2="${height - pad.bottom}"></line>`;
 
     const axisY = height - 8;
@@ -1503,6 +1608,25 @@ class CarHeaterCard extends HTMLElement {
   }
 
   pickerTemplate() {
+    if (this._departurePicker) return `<div class="picker-overlay">
+      <div class="picker">
+        <div class="picker-title">${this._departurePicker.label}</div>
+        <label class="departure-date-label">${this.t('date')}<input id="ch-date" class="date-input" type="date" value="${this._departurePicker.date}"></label>
+        <div class="wheel-row">
+          <div class="wheel-col"><div class="wheel-label">${this.t('hour')}</div><select id="ch-hour" size="5">${this.numberOptions(23, this._departurePicker.hour)}</select></div>
+          <div class="colon">:</div>
+          <div class="wheel-col"><div class="wheel-label">${this.t('minute')}</div><select id="ch-minute" size="5">${this.numberOptions(59, this._departurePicker.minute)}</select></div>
+        </div>
+        <div class="picker-actions"><button class="picker-cancel">${this.t('cancel')}</button><button class="picker-save">${this.t('save')}</button></div>
+      </div>
+    </div>`;
+    if (this._datePicker) return `<div class="picker-overlay">
+      <div class="picker">
+        <div class="picker-title">${this._datePicker.label}</div>
+        <input id="ch-date" class="date-input" type="date" value="${this._datePicker.date}">
+        <div class="picker-actions"><button class="picker-cancel">${this.t('cancel')}</button><button class="picker-save">${this.t('save')}</button></div>
+      </div>
+    </div>`;
     if (!this._timePicker) return '';
     return `<div class="picker-overlay">
       <div class="picker">
@@ -1558,16 +1682,20 @@ class CarHeaterCard extends HTMLElement {
           .times-settings { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-bottom:10px; align-items:start; }
           .manual-stack { display:flex; flex-direction:column; gap:8px; min-width:0; }
           .times-box { border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
+          .date-input { box-sizing:border-box; width:100%; min-height:44px; padding:10px; border:1px solid var(--divider-color); border-radius:12px; background:var(--secondary-background-color); color:var(--primary-text-color); font:inherit; color-scheme:normal; }
+          .datetime-value { display:flex; flex-direction:column; align-items:center; gap:2px; line-height:1.25; }
+          .date-part { font-size:12px; font-weight:600; color:var(--secondary-text-color); }
+          .clock-part { font-size:18px; font-weight:800; }
           .times-title { font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
           .times { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
-          .time { border-radius:13px; background:var(--card-background-color); padding:10px; cursor:pointer; min-width:0; }
+          .time { border-radius:13px; background:var(--card-background-color); padding:10px; cursor:pointer; min-width:0; text-align:center; }
           .label { font-size:12px; color:var(--secondary-text-color); margin-bottom:4px; white-space:nowrap; }
-          .value { font-size:18px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .value { font-size:18px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-height:42px; display:flex; align-items:flex-end; justify-content:center; line-height:1.25; }
 
-          .graph-box { border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
+          .graph-box { width:100%; box-sizing:border-box; border:1px solid var(--divider-color); border-radius:18px; background:var(--secondary-background-color); padding:12px; margin-bottom:12px; }
           .graph-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
           .graph-head span { color:var(--secondary-text-color); font-size:12px; }
-          .history-graph { width:100%; height:214px; border-radius:14px 14px 6px 6px; background:var(--card-background-color); overflow:visible; display:block; }
+          .history-graph { max-width:850px; margin-left:auto; margin-right:auto; width:100%; height:214px; border-radius:14px 14px 6px 6px; background:var(--card-background-color); overflow:visible; display:block; }
           .graph-bg { fill:var(--card-background-color); }
           .lane-grid { stroke:var(--divider-color); stroke-width:1; opacity:.75; vector-effect:non-scaling-stroke; }
           .lane-label { fill:var(--secondary-text-color); font-size:11px; font-weight:700; dominant-baseline:middle; }
@@ -1594,7 +1722,6 @@ class CarHeaterCard extends HTMLElement {
           .timeline-axis span { position:absolute; top:0; transform:translateX(-50%); white-space:nowrap; }
           .timeline-axis span:nth-child(1) { transform:translateX(0); }
           .timeline-axis span:last-child { transform:translateX(-100%); }
-          .marker-label { font-size:9px; opacity:.85; }
           .graph-legend { display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; color:var(--secondary-text-color); font-size:12px; }
           .graph-legend span { display:flex; align-items:center; gap:5px; }
           .dot { width:9px; height:9px; border-radius:999px; display:inline-block; }
@@ -1658,6 +1785,8 @@ class CarHeaterCard extends HTMLElement {
           .slide-toggle .slide-knob { transform:translateX(var(--slide-x, 0px)); }
           .picker-overlay { position:fixed; inset:0; z-index:999; background:rgba(0,0,0,.42); display:flex; align-items:center; justify-content:center; padding:20px; }
           .picker { width:min(360px, 100%); background:var(--card-background-color); color:var(--primary-text-color); border-radius:22px; padding:18px; box-shadow:0 12px 36px rgba(0,0,0,.35); }
+          .departure-date-label { display:grid; gap:5px; margin-bottom:14px; font-size:12px; color:var(--secondary-text-color); }
+          .date-input { width:100%; box-sizing:border-box; padding:9px; border:1px solid var(--divider-color); border-radius:10px; background:var(--secondary-background-color); color:var(--primary-text-color); font:inherit; }
           .picker-title { font-size:20px; font-weight:800; text-align:center; margin-bottom:12px; }
           .wheel-row { display:grid; grid-template-columns:1fr 24px 1fr; align-items:center; gap:6px; }
           .colon { text-align:center; font-size:32px; font-weight:800; color:var(--secondary-text-color); }
@@ -1703,7 +1832,7 @@ class CarHeaterCard extends HTMLElement {
             <div class="times-title"><ha-icon icon="mdi:clock-outline"></ha-icon>${this.t('times')}</div>
             ${showSettings ? `<div class="times-settings">
               <div class="manual-stack">
-                ${this.timeSetting(e.manual_departure_time, this.t('manual_departure'))}
+                ${this.departureSetting(e.manual_departure_date, e.manual_departure_time, this.t('manual_departure'))}
                 <car-heater-slide-switch
                   data-entity="${e.one_time_switch || ''}"
                   label="${this.t('one_time')}"
@@ -1716,9 +1845,9 @@ class CarHeaterCard extends HTMLElement {
               ${this.timeSetting(e.workday_departure_time, this.t('workday_departure'))}
             </div>` : ''}
             <div class="times">
-              <div class="time" data-action="more" data-entity="${e.departure_time || ''}"><div class="label">${this.t('departure')}</div><div class="value">${this.state(e.departure_time)}</div></div>
-              <div class="time" data-action="more" data-entity="${e.start_time || ''}"><div class="label">${this.t('start')}</div><div class="value">${this.state(e.start_time)}</div></div>
-              <div class="time" data-action="more" data-entity="${e.stop_time || ''}"><div class="label">${this.t('stop')}</div><div class="value">${this.state(e.stop_time)}</div></div>
+              <div class="time" data-action="more" data-entity="${e.departure_time || ''}"><div class="label">${this.t('departure')}</div><div class="value">${this.formatScheduleValue(e.departure_time)}</div></div>
+              <div class="time" data-action="more" data-entity="${e.start_time || ''}"><div class="label">${this.t('start')}</div><div class="value">${this.formatScheduleValue(e.start_time)}</div></div>
+              <div class="time" data-action="more" data-entity="${e.stop_time || ''}"><div class="label">${this.t('stop')}</div><div class="value">${this.formatScheduleValue(e.stop_time)}</div></div>
               <div class="time" data-action="more" data-entity="${e.running_time || ''}"><div class="label">${this.t('running_time')}</div><div class="value">${this.fmt(e.running_time)}</div></div>
             </div>
           </div>
@@ -1763,31 +1892,30 @@ class CarHeaterCardEditor extends HTMLElement {
   }
 
   isCarHeaterDevice(device) {
-    const identifiers = Array.from(device?.identifiers || []);
-    if (identifiers.some((identifier) => {
-      if (Array.isArray(identifier)) return identifier[0] === 'car_heater';
-      return String(identifier).includes('car_heater');
-    })) return true;
-    const name = String(device?.name_by_user || device?.name || '').toLowerCase();
-    const manufacturer = String(device?.manufacturer || '').toLowerCase();
-    const model = String(device?.model || '').toLowerCase();
-    const entryType = String(device?.entry_type || '').toLowerCase();
-    return name.includes('car heater') || name.includes('motorvärmare') || model.includes('car heater') || manufacturer.includes('car heater') || entryType.includes('car_heater');
+    return Array.from(device?.identifiers || []).some((identifier) =>
+      Array.isArray(identifier) && identifier[0] === 'car_heater');
   }
 
-  isCarHeaterRegistryEntity(entry) {
-    const platform = String(entry?.platform || '').toLowerCase();
-    const uniqueId = String(entry?.unique_id || '').toLowerCase();
-    const entityId = String(entry?.entity_id || '').toLowerCase();
-    const translationKey = String(entry?.translation_key || '').toLowerCase();
-    return platform === 'car_heater'
-      || uniqueId.includes('car_heater')
-      || uniqueId.includes('_departure')
-      || uniqueId.includes('_runtime')
-      || uniqueId.includes('_manual_active')
-      || entityId.includes('car_heater')
-      || translationKey === 'departure'
-      || translationKey === 'runtime';
+  editorLanguage() {
+    return String(this._config?.language || this._hass?.locale?.language || this._hass?.language || 'en').toLowerCase().startsWith('sv') ? 'sv' : 'en';
+  }
+
+  et(key) {
+    const sv = {
+      device:'Motorvärmarenhet', select:'Välj motorvärmarenhet', title:'Rubrik', language:'Språk (valfritt)',
+      graph_hours:'Antal timmar i grafen', timeline_axis:'Tidslinjens axel', relative:'Relativ', clock:'Klockslag',
+      runtime_days:'Dagar med körhistorik', heat_curve:'Visa värmekurva', settings:'Visa tidsinställningar',
+      temperature:'Visa temperaturgraf', power:'Visa effektgraf', planned:'Visa planerad gångtid',
+      history:'Visa daglig körhistorik', hint:'Välj enheten som tillhör Car Heater-integrationen. Kortet hämtar effekt och tidslinje från integrationen.'
+    };
+    const en = {
+      device:'Car Heater device', select:'Select Car Heater device', title:'Title', language:'Language (optional)',
+      graph_hours:'Graph hours', timeline_axis:'Timeline axis', relative:'Relative', clock:'Clock time',
+      runtime_days:'Runtime history days', heat_curve:'Show heating curve', settings:'Show time settings',
+      temperature:'Show temperature graph', power:'Show power graph', planned:'Show planned runtime',
+      history:'Show daily runtime history', hint:'Select the device belonging to the Car Heater integration. The card reads power and timeline data from the integration.'
+    };
+    return (this.editorLanguage() === 'sv' ? sv : en)[key] || key;
   }
 
   async loadDevices() {
@@ -1834,49 +1962,49 @@ class CarHeaterCardEditor extends HTMLElement {
         .hint { color:var(--secondary-text-color); font-size:12px; }
       </style>
       <div class="editor">
-        <label>Car Heater device
+        <label>${this.et('device')}
           <select id="device">
-            <option value="">Select Car Heater device</option>
+            <option value="">${this.et('select')}</option>
             ${deviceOptions}
           </select>
         </label>
-        <label>Title
+        <label>${this.et('title')}
           <input id="title" value="${cfg.title || ''}" placeholder="Car Heater">
         </label>
-        <label>Language, optional
+        <label>${this.et('language')}
           <input id="language" value="${cfg.language || ''}" placeholder="sv / en / auto">
         </label>
-        <label>Graph hours
+        <label>${this.et('graph_hours')}
           <input id="graph_hours" type="number" min="1" max="168" value="${cfg.graph_hours ?? 24}">
         </label>
-        <label>Timeline axis
+        <label>${this.et('timeline_axis')}
           <select id="timeline_axis">
-            <option value="relative" ${cfg.timeline_axis !== 'clock' ? 'selected' : ''}>Relative</option>
-            <option value="clock" ${cfg.timeline_axis === 'clock' ? 'selected' : ''}>Clock time</option>
+            <option value="relative" ${cfg.timeline_axis !== 'clock' ? 'selected' : ''}>${this.et('relative')}</option>
+            <option value="clock" ${cfg.timeline_axis === 'clock' ? 'selected' : ''}>${this.et('clock')}</option>
           </select>
         </label>
-        <label>Runtime history days
+        <label>${this.et('runtime_days')}
           <input id="runtime_days" type="number" min="1" max="31" value="${cfg.runtime_history_days ?? 7}">
         </label>
         <label>
-          <span><input id="show_heat_curve" type="checkbox" ${cfg.show_heat_curve !== false ? 'checked' : ''}> Show heating curve</span>
+          <span><input id="show_heat_curve" type="checkbox" ${cfg.show_heat_curve !== false ? 'checked' : ''}> ${this.et('heat_curve')}</span>
         </label>
         <label>
-          <span><input id="show_settings" type="checkbox" ${cfg.show_time_settings !== false ? 'checked' : ''}> Show time settings</span>
+          <span><input id="show_settings" type="checkbox" ${cfg.show_time_settings !== false ? 'checked' : ''}> ${this.et('settings')}</span>
         </label>
         <label>
-          <span><input id="show_temperature_graph" type="checkbox" ${cfg.show_temperature_graph ? 'checked' : ''}> Show temperature graph</span>
+          <span><input id="show_temperature_graph" type="checkbox" ${cfg.show_temperature_graph ? 'checked' : ''}> ${this.et('temperature')}</span>
         </label>
         <label>
-          <span><input id="show_power_graph" type="checkbox" ${cfg.show_power_graph ? 'checked' : ''}> Show power graph</span>
+          <span><input id="show_power_graph" type="checkbox" ${cfg.show_power_graph ? 'checked' : ''}> ${this.et('power')}</span>
         </label>
         <label>
-          <span><input id="show_planned_runtime" type="checkbox" ${cfg.show_planned_runtime ? 'checked' : ''}> Show planned runtime</span>
+          <span><input id="show_planned_runtime" type="checkbox" ${cfg.show_planned_runtime ? 'checked' : ''}> ${this.et('planned')}</span>
         </label>
         <label>
-          <span><input id="show_runtime_history" type="checkbox" ${cfg.show_runtime_history ? 'checked' : ''}> Show daily runtime history</span>
+          <span><input id="show_runtime_history" type="checkbox" ${cfg.show_runtime_history ? 'checked' : ''}> ${this.et('history')}</span>
         </label>
-        <div class="hint">Select the Car Heater device. The card then reads the configured power sensor and timeline data from the integration.</div>
+        <div class="hint">${this.et('hint')}</div>
       </div>`;
     this.shadowRoot.querySelector('#device')?.addEventListener('change', (ev) => this.valueChanged({ device_id: ev.target.value, entities: undefined }));
     this.shadowRoot.querySelector('#title')?.addEventListener('input', (ev) => this.valueChanged({ title: ev.target.value }));
